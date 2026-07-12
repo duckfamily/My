@@ -35,6 +35,7 @@ local HttpService = game:GetService("HttpService")
 
 local player = Players.LocalPlayer
 local Window  -- forward declaration (used by aim + cleanup)
+local restoreMenuMouse = function() end
 
 -- ============================================================
 -- Library
@@ -72,80 +73,14 @@ local espGui = newInst("ScreenGui", {
 espGui.Parent = guiParent
 
 -- ============================================================
--- Config
+-- Runtime settings. Defaults are declared next to their GUI controls below,
+-- so this table contains only the values selected for the current session.
 -- ============================================================
-local cfg = {
-    -- ESP
-    Enabled = false,
-    PlayerESP = true,
-    NpcESP = true,
-    VisualMode = "Outline", -- Off / Outline / Fill / Both
-    DetailMode = "Full",    -- Minimal / Combat / Full
-    Tracers = false,
-    OffscreenArrows = true,
-    DistanceFade = true,
-    NpcVisibleCheck = true,
-    ThreatPanel = true,
-    NpcNameFilter = "",
-    ChamsOpacity = 55,     -- % fill opacity
-    TeamCheck = false,
-    MaxDistance = 500,
-    SeparateRanges = false,
-    PlayerMaxDistance = 500,
-    NpcMaxDistance = 250,
-    VisibleColor = Color3.fromRGB(70, 255, 120),
-    HiddenColor = Color3.fromRGB(255, 55, 55),
-    NpcColor = Color3.fromRGB(255, 150, 50),
-    -- Loot
-    LootEnabled = false,
-    LootElite = true,
-    LootHigh = true,
-    LootMid = false,
-    LootTrash = false,
-    LootItems = true,
-    LootBodies = true,
-    LootNames = true,
-    LootMaxDist = 120,
-    LootMinPrice = 0,
-    LootMinPricePerKg = 0,
-    LootSort = "Distance",
-    LootShowPrice = true,
-    LootShowCategory = false,
-    LootList = true,
-    InventoryHelper = true,
-    QuestHelper = true,
-    -- World
-    ExfilESP = true,
-    ExfilOnlyAvailable = true,
-    ExfilShowLocked = true,
-    ExfilOffscreen = true,
-    ExfilNearest = true,
-    DoorESP = true,
-    DoorMaxDist = 90,
-    DoorOnlyInteresting = true,
-    DoorCheckKeys = true,
-    RaidTimer = true,
-    RaidWarnings = true,
-    ServerInfo = true,
-    Fullbright = false,
-    ContextAuto = true,
-    -- Aim
-    AimEnabled = false,
-    AimFov = 80,
-    AimSmoothness = 5,
-    AimTargetPart = "Smart",
-    AimTargetPlayers = true,
-    AimTargetNpcs = true,
-    AimPreferPlayers = true,
-    AimTeamCheck = true,
-    AimLosCheck = true,
-    AimRetention = "Soft", -- Off / Soft / Hard
-    AimShowFov = true,
-    AimMaxDist = 300,
-    AimPriority = "Crosshair",
-    AimDeadzone = 1.5,
-    AimMaxStep = 24,
-}
+local cfg = {}
+local function guiDefault(key, value)
+    if cfg[key] == nil then cfg[key] = value end
+    return cfg[key]
+end
 
 local aimHolding = false
 
@@ -258,25 +193,25 @@ local function createEntry(model, isNpc)
     d.infoBB = infoBB
     d.nameLabel = newInst("TextLabel", {
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 0),
-        Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = WHITE, Text = "",
+        Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = WHITE, Text = "",
         TextStrokeColor3 = BLACK, TextStrokeTransparency = 0.15,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, infoBB)
     d.detailLabel = newInst("TextLabel", {
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 15), Position = UDim2.fromOffset(0, 19),
-        Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = Color3.fromRGB(215, 215, 215), Text = "",
+        Font = Enum.Font.GothamMedium, TextSize = 10, TextColor3 = Color3.fromRGB(215, 215, 215), Text = "",
         TextStrokeColor3 = BLACK, TextStrokeTransparency = 0.2,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, infoBB)
     d.weapLabel = newInst("TextLabel", {
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 15), Position = UDim2.fromOffset(0, 35),
-        Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = Color3.fromRGB(255, 200, 90), Text = "",
+        Font = Enum.Font.GothamBold, TextSize = 10, TextColor3 = Color3.fromRGB(255, 200, 90), Text = "",
         TextStrokeColor3 = BLACK, TextStrokeTransparency = 0.2,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, infoBB)
     d.gearLabel = newInst("TextLabel", {
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 15), Position = UDim2.fromOffset(0, 51),
-        Font = Enum.Font.GothamMedium, TextSize = 11, TextColor3 = Color3.fromRGB(150, 205, 255), Text = "",
+        Font = Enum.Font.GothamMedium, TextSize = 9, TextColor3 = Color3.fromRGB(150, 205, 255), Text = "",
         TextStrokeColor3 = BLACK, TextStrokeTransparency = 0.2,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, infoBB)
@@ -317,9 +252,6 @@ local function createEntry(model, isNpc)
         Size = UDim2.fromOffset(0, 2), Visible = false,
     }, espGui)
 
-    d.arrow = mkText(espGui, 16, true)
-    d.arrow.Size = UDim2.fromOffset(190, 24)
-
     cache[model] = d
 end
 
@@ -330,7 +262,6 @@ local function destroyEntry(model)
     pcall(function() d.infoBB:Destroy() end)
     pcall(function() d.hpBB:Destroy() end)
     pcall(function() d.tr:Destroy() end)
-    pcall(function() d.arrow:Destroy() end)
     cache[model] = nil
 end
 
@@ -339,7 +270,6 @@ local function hideEntry(d)
     d.infoBB.Enabled = false
     d.hpBB.Enabled = false
     d.tr.Visible = false
-    d.arrow.Visible = false
 end
 
 -- ============================================================
@@ -380,22 +310,6 @@ local function computeVisible(model, cam)
     local torso = model:FindFirstChild("Torso") or model:FindFirstChild("HumanoidRootPart")
     if torso and hasLineOfSight(cam, torso) then return true end
     return false
-end
-
-local function edgePosition(cam, worldPos, vpSize, margin)
-    local p = cam:WorldToViewportPoint(worldPos)
-    local center = Vector2.new(vpSize.X / 2, vpSize.Y / 2)
-    local dir = Vector2.new(p.X, p.Y) - center
-    if p.Z < 0 then dir = -dir end
-    if dir.Magnitude < 0.001 then dir = Vector2.new(0, -1) end
-    dir = dir.Unit
-    local m = margin or 35
-    local half = Vector2.new(math.max(center.X - m, 1), math.max(center.Y - m, 1))
-    local scale = math.min(
-        math.abs(half.X / (math.abs(dir.X) < 0.001 and 0.001 or dir.X)),
-        math.abs(half.Y / (math.abs(dir.Y) < 0.001 and 0.001 or dir.Y))
-    )
-    return center + dir * scale, math.deg(math.atan2(dir.Y, dir.X))
 end
 
 local function equipmentText(model)
@@ -479,17 +393,8 @@ local function drawEntity(model, d, myRoot, cam, vpSize, dt)
     -- the raycasts, billboard updates and projections entirely.
     if not onScreen then
         hideEntry(d)
-        if cfg.OffscreenArrows then
-            local edge = edgePosition(cam, hrp.Position, vpSize, 42)
-            local col = d.isNpc and cfg.NpcColor or cfg.HiddenColor
-            d.arrow.Text = string.format("◈ %s  %.0fм", model.Name, dist)
-            d.arrow.TextColor3 = col
-            d.arrow.Position = UDim2.fromOffset(edge.X, edge.Y)
-            d.arrow.Visible = true
-        end
-        return true
+        return false
     end
-    d.arrow.Visible = false
 
     local frac = math.clamp(hum.Health / math.max(hum.MaxHealth, 1), 0, 1)
     local col
@@ -678,14 +583,14 @@ local raidLabel = newInst("TextLabel", {
     Text = "РЕЙД",
 }, raidPill)
 
-local contextLabel = mkText(espGui, 12, true)
+local contextLabel = mkText(espGui, 10, true)
 contextLabel.AnchorPoint = Vector2.new(1, 0)
 contextLabel.Position = UDim2.new(1, -18, 0, 16)
 contextLabel.Size = UDim2.fromOffset(220, 22)
 contextLabel.TextXAlignment = Enum.TextXAlignment.Right
 contextLabel.Visible = true
 
-local nearbyLabel = mkText(espGui, 13, true)
+local nearbyLabel = mkText(espGui, 11, true)
 nearbyLabel.AnchorPoint = Vector2.new(0, 0)
 nearbyLabel.Position = UDim2.fromOffset(18, 16)
 nearbyLabel.Size = UDim2.fromOffset(560, 24)
@@ -715,7 +620,6 @@ local function clearExfilCache()
     for _, d in pairs(exfilCache) do
         pcall(function() d.text:Destroy() end)
         pcall(function() d.sub:Destroy() end)
-        pcall(function() d.arrow:Destroy() end)
     end
     exfilCache = {}
 end
@@ -732,13 +636,11 @@ local function findExfils()
         name = tostring(name)
         alive[name] = true
         if not exfilCache[name] then
-            local text = mkText(espGui, 14, true)
+            local text = mkText(espGui, 10, true)
             text.TextColor3 = EXFIL_COL
-            local sub = mkText(espGui, 12, false)
+            local sub = mkText(espGui, 9, false)
             sub.TextColor3 = EXFIL_SUB
-            local arrow = mkText(espGui, 13, true)
-            arrow.Size = UDim2.fromOffset(230, 22)
-            exfilCache[name] = { text = text, sub = sub, arrow = arrow, ename = name }
+            exfilCache[name] = { text = text, sub = sub, ename = name }
         end
         return exfilCache[name]
     end
@@ -755,13 +657,13 @@ local function findExfils()
     end
     for name, d in pairs(exfilCache) do
         if not alive[name] then
-            pcall(function() d.text:Destroy(); d.sub:Destroy(); d.arrow:Destroy() end)
+            pcall(function() d.text:Destroy(); d.sub:Destroy() end)
             exfilCache[name] = nil
         end
     end
 end
 
-local function drawExfils(myRoot, cam, vpSize)
+local function drawExfils(myRoot, cam)
     local available, hasAvailability = availableExfils()
     local nearestName, nearestDistance
     if cfg.ExfilNearest and myRoot then
@@ -789,23 +691,12 @@ local function drawExfils(myRoot, cam, vpSize)
             local locked = state and state.locked
             local nearest = name == nearestName
             local color = locked and Color3.fromRGB(255, 80, 65) or (nearest and Color3.fromRGB(255, 225, 70) or EXFIL_COL)
-            if not onScreen then
-                if cfg.ExfilOffscreen then
-                    local edge = edgePosition(cam, pos, vpSize, 48)
-                    d.arrow.Text = string.format("> %s  %.0fм%s%s", name, dist, locked and "  ЗАКРЫТ" or "", nearest and "  БЛИЖАЙШИЙ" or "")
-                    d.arrow.TextColor3 = color
-                    d.arrow.Position = UDim2.fromOffset(edge.X, edge.Y)
-                    d.arrow.Visible = true
-                    return true
-                end
-                return false
-            end
-            d.arrow.Visible = false
-            d.text.Text = (nearest and "* " or "ВЫХОД ") .. name
+            if not onScreen then return false end
+            d.text.Text = locked and "ЗАКРЫТЫЙ ВЫХОД" or (nearest and "БЛИЖАЙШИЙ ВЫХОД" or "ВЫХОД")
             d.text.TextColor3 = color
             d.text.Position = UDim2.fromOffset(sPos.X, sPos.Y - 8)
             d.text.Visible = true
-            local suffix = locked and "  | ЗАКРЫТ" or (nearest and "  | БЛИЖАЙШИЙ" or "")
+            local suffix = ""
             if state and type(state.timer) == "number" then
                 local mins = math.floor(math.max(state.timer, 0) / 60)
                 local secs = math.floor(math.max(state.timer, 0) % 60)
@@ -819,7 +710,6 @@ local function drawExfils(myRoot, cam, vpSize)
         if not ok2 or not vis2 then
             d.text.Visible = false
             d.sub.Visible = false
-            d.arrow.Visible = false
         end
     end
 end
@@ -828,7 +718,6 @@ local function hideExfils()
     for _, d in pairs(exfilCache) do
         d.text.Visible = false
         d.sub.Visible = false
-        d.arrow.Visible = false
     end
 end
 
@@ -960,19 +849,19 @@ local inventorySummary = {
 local activeQuestItems = {}
 local currentQuestTitle = ""
 
-local inventoryLabel = mkText(espGui, 12, true)
+local inventoryLabel = mkText(espGui, 10, true)
 inventoryLabel.AnchorPoint = Vector2.new(0, 1)
 inventoryLabel.Position = UDim2.new(0, 18, 1, -18)
-inventoryLabel.Size = UDim2.fromOffset(410, 74)
+inventoryLabel.Size = UDim2.fromOffset(400, 58)
 inventoryLabel.TextXAlignment = Enum.TextXAlignment.Left
 inventoryLabel.TextYAlignment = Enum.TextYAlignment.Bottom
 inventoryLabel.TextColor3 = Color3.fromRGB(170, 235, 255)
 inventoryLabel.Visible = false
 
-local questPlannerLabel = mkText(espGui, 12, true)
+local questPlannerLabel = mkText(espGui, 10, true)
 questPlannerLabel.AnchorPoint = Vector2.new(0, 0)
 questPlannerLabel.Position = UDim2.fromOffset(18, 48)
-questPlannerLabel.Size = UDim2.fromOffset(440, 112)
+questPlannerLabel.Size = UDim2.fromOffset(400, 58)
 questPlannerLabel.TextXAlignment = Enum.TextXAlignment.Left
 questPlannerLabel.TextYAlignment = Enum.TextYAlignment.Top
 questPlannerLabel.TextWrapped = true
@@ -1123,7 +1012,8 @@ local function findQuestDefinition(title)
 end
 
 local function rebuildQuestPlan()
-    local title, lines, qtype = questUiInfo()
+    local title, _, qtype = questUiInfo()
+    local lines = {}
     currentQuestTitle = title
     activeQuestItems = {}
     local definition = findQuestDefinition(title)
@@ -1153,7 +1043,6 @@ local function rebuildQuestPlan()
                 local known = itemByLowerName[string.lower(cleanGuiText(candidate))]
                 if known then addRequirement(known, 1) end
             end
-            if #lines == 0 then lines[#lines + 1] = cleanGuiText(definition.desc) end
         end
     end
     if cfg.QuestHelper and title ~= "" then
@@ -1204,7 +1093,7 @@ local LOOT_HL = 16   -- Highlights are engine-limited (~31 total); cap loot glow
 local lootPool = {}
 local lootHlPool = {}
 for i = 1, LOOT_POOL do
-    lootPool[i] = mkText(espGui, 11, true)
+    lootPool[i] = mkText(espGui, 9, true)
 end
 for i = 1, LOOT_HL do
     lootHlPool[i] = newInst("Highlight", {
@@ -1220,7 +1109,7 @@ local lootDirty = true
 local lootWatchRoot = nil
 local lootListLabels = {}
 for i = 1, 10 do
-    local label = mkText(espGui, 11, i == 1)
+    local label = mkText(espGui, 9, i == 1)
     label.AnchorPoint = Vector2.new(1, 0)
     label.Position = UDim2.new(1, -18, 0, 50 + (i - 1) * 17)
     label.Size = UDim2.fromOffset(310, 17)
@@ -1402,7 +1291,7 @@ end
 -- ============================================================
 local DOOR_POOL = 18
 local doorLabels = {}
-for i = 1, DOOR_POOL do doorLabels[i] = mkText(espGui, 11, true) end
+for i = 1, DOOR_POOL do doorLabels[i] = mkText(espGui, 9, true) end
 local doorEntries = {}
 
 local function configValue(parent, name, fallback)
@@ -2006,7 +1895,7 @@ local function onRender(dt)
             exfilRefreshAccum = 0
             findExfils()
         end
-        drawExfils(myRoot, cam, vpSize)
+        drawExfils(myRoot, cam)
     else
         hideExfils()
     end
@@ -2144,6 +2033,7 @@ local cleanedUp = false
 local function cleanup(fromWindow)
     if cleanedUp then return end
     cleanedUp = true
+    pcall(restoreMenuMouse)
     unbindAim()
     stopRender()
     restoreFullbright()
@@ -2162,6 +2052,11 @@ if getgenv then getgenv().__HAKO_CLEANUP = cleanup end
 -- ============================================================
 -- MacLib UI
 -- ============================================================
+local menuUIS = game:GetService("UserInputService")
+local menuWasOpen = false
+local savedMouseIcon = menuUIS.MouseIconEnabled
+local savedMouseBehavior = menuUIS.MouseBehavior
+
 Window = MacLib:Window({
     Title = "hako",
     Subtitle = "ESP • Прицел • Лут",
@@ -2177,14 +2072,34 @@ end)
 
 -- Free the mouse while the menu is open (first-person games lock it to center)
 do
-    local UIS = game:GetService("UserInputService")
+    restoreMenuMouse = function()
+        if menuWasOpen then
+            pcall(function()
+                menuUIS.MouseIconEnabled = savedMouseIcon
+                menuUIS.MouseBehavior = savedMouseBehavior
+            end)
+        end
+        menuWasOpen = false
+    end
+
     conns[#conns + 1] = RunService.Heartbeat:Connect(function()
         local ok, open = pcall(function() return Window:GetState() end)
-        if ok and open == true then
-            if not UIS.MouseIconEnabled then UIS.MouseIconEnabled = true end
-            if UIS.MouseBehavior ~= Enum.MouseBehavior.Default then
-                UIS.MouseBehavior = Enum.MouseBehavior.Default
+        open = ok and open == true
+        if open then
+            if not menuWasOpen then
+                menuWasOpen = true
             end
+            if not menuUIS.MouseIconEnabled then menuUIS.MouseIconEnabled = true end
+            if menuUIS.MouseBehavior ~= Enum.MouseBehavior.Default then
+                menuUIS.MouseBehavior = Enum.MouseBehavior.Default
+            end
+        elseif menuWasOpen then
+            restoreMenuMouse()
+        else
+            -- Keep the snapshot current while the game owns the mouse. This
+            -- preserves lobby cursor state as well as raid LockCenter state.
+            savedMouseIcon = menuUIS.MouseIconEnabled
+            savedMouseBehavior = menuUIS.MouseBehavior
         end
     end)
 end
@@ -2197,63 +2112,64 @@ local espL = espTab:Section({ Side = "Left" })
 local espR = espTab:Section({ Side = "Right" })
 
 espL:Header({ Name = "Основное" })
-espL:Toggle({ Name = "Включить ESP", Default = false,
+espL:Toggle({ Name = "Включить ESP", Default = guiDefault("Enabled", false),
     Callback = function(v) cfg.Enabled = v; ensureRender() end }, "espEnabled")
-espL:Toggle({ Name = "ESP игроков", Default = cfg.PlayerESP,
+espL:Toggle({ Name = "ESP игроков", Default = guiDefault("PlayerESP", true),
     Callback = function(v) cfg.PlayerESP = v end }, "espPlayers")
-espL:Toggle({ Name = "ESP NPC", Default = cfg.NpcESP,
+espL:Toggle({ Name = "ESP NPC", Default = guiDefault("NpcESP", true),
     Callback = function(v) cfg.NpcESP = v end }, "espNpcs")
-espL:Toggle({ Name = "Проверять команду игроков", Default = cfg.TeamCheck,
+espL:Toggle({ Name = "Команда игроков", Default = guiDefault("TeamCheck", false),
     Callback = function(v) cfg.TeamCheck = v end }, "espTeam")
-espL:Toggle({ Name = "Проверять видимость NPC", Default = cfg.NpcVisibleCheck,
+espL:Toggle({ Name = "Видимость NPC", Default = guiDefault("NpcVisibleCheck", true),
     Callback = function(v) cfg.NpcVisibleCheck = v end }, "espNpcVis")
+guiDefault("NpcNameFilter", "")
 espL:Input({ Name = "Фильтр имени NPC", Placeholder = "пусто = все", AcceptedCharacters = "All",
     Callback = function(v) cfg.NpcNameFilter = tostring(v or "") end,
     onChanged = function(v) cfg.NpcNameFilter = tostring(v or "") end }, "espNpcFilter")
 espL:Label({ Text = "Игроки: зелёный = виден, красный = за стеной" })
 espL:Header({ Name = "Контур и подсветка" })
+guiDefault("VisualMode", "Outline")
 espL:Dropdown({ Name = "Режим подсветки", Options = { "Выключено", "Контур", "Заливка", "Контур + заливка" },
     Default = 2, Multi = false, Callback = function(v)
         cfg.VisualMode = ({["Выключено"]="Off", ["Контур"]="Outline", ["Заливка"]="Fill", ["Контур + заливка"]="Both", ["Off"]="Off", ["Outline"]="Outline", ["Fill"]="Fill", ["Both"]="Both"})[v] or "Outline"
     end }, "espVisualMode")
-espL:Slider({ Name = "Прозрачность заливки", Default = cfg.ChamsOpacity,
+espL:Slider({ Name = "Прозрачность заливки", Default = guiDefault("ChamsOpacity", 55),
     Minimum = 0, Maximum = 100, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.ChamsOpacity = v end }, "espChamsOp")
 espL:Header({ Name = "Дальность" })
-espL:Toggle({ Name = "Раздельная дальность", Default = cfg.SeparateRanges,
+espL:Toggle({ Name = "Раздельная дальность", Default = guiDefault("SeparateRanges", false),
     Callback = function(v) cfg.SeparateRanges = v end }, "espSeparateRange")
-espL:Slider({ Name = "Общая дистанция", Default = cfg.MaxDistance,
+espL:Slider({ Name = "Общая дистанция", Default = guiDefault("MaxDistance", 500),
     Minimum = 50, Maximum = 1000, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.MaxDistance = v end }, "espMaxDist")
-espL:Slider({ Name = "Дистанция игроков", Default = cfg.PlayerMaxDistance,
+espL:Slider({ Name = "Дистанция игроков", Default = guiDefault("PlayerMaxDistance", 500),
     Minimum = 50, Maximum = 1000, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.PlayerMaxDistance = v end }, "espPlayerMaxDist")
-espL:Slider({ Name = "Дистанция NPC", Default = cfg.NpcMaxDistance,
+espL:Slider({ Name = "Дистанция NPC", Default = guiDefault("NpcMaxDistance", 250),
     Minimum = 50, Maximum = 1000, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.NpcMaxDistance = v end }, "espNpcMaxDist")
 espL:Label({ Text = "При выключенном тумблере используется общая дистанция." })
 
 espR:Header({ Name = "Детали" })
+guiDefault("DetailMode", "Full")
 espR:Dropdown({ Name = "Уровень информации", Options = { "Минимальный", "Боевой", "Полный" },
     Default = 3, Multi = false, Callback = function(v)
         cfg.DetailMode = ({["Минимальный"]="Minimal", ["Боевой"]="Combat", ["Полный"]="Full", ["Minimal"]="Minimal", ["Combat"]="Combat", ["Full"]="Full"})[v] or "Full"
     end }, "espDetailMode")
 espR:Label({ Text = "Минимальный: имя и дистанция" })
 espR:Label({ Text = "Боевой: + здоровье; Полный: + оружие" })
-espR:Toggle({ Name = "Линии до игроков", Default = cfg.Tracers,
+espR:Toggle({ Name = "Линии до игроков", Default = guiDefault("Tracers", false),
     Callback = function(v) cfg.Tracers = v end }, "espTracers")
-espR:Toggle({ Name = "Стрелки за экраном", Default = cfg.OffscreenArrows,
-    Callback = function(v) cfg.OffscreenArrows = v end }, "espOffscreen")
-espR:Toggle({ Name = "Затухание с расстоянием", Default = cfg.DistanceFade,
+espR:Toggle({ Name = "Затухание по дистанции", Default = guiDefault("DistanceFade", true),
     Callback = function(v) cfg.DistanceFade = v end }, "espFade")
-espR:Toggle({ Name = "Панель угроз", Default = cfg.ThreatPanel,
+espR:Toggle({ Name = "Панель угроз", Default = guiDefault("ThreatPanel", true),
     Callback = function(v) cfg.ThreatPanel = v end }, "espThreatPanel")
 espR:Header({ Name = "Цвета" })
-espR:Colorpicker({ Name = "Видимая цель", Default = cfg.VisibleColor,
+espR:Colorpicker({ Name = "Видимая цель", Default = guiDefault("VisibleColor", Color3.fromRGB(70, 255, 120)),
     Callback = function(c) cfg.VisibleColor = c end }, "colVisible")
-espR:Colorpicker({ Name = "Цель за стеной", Default = cfg.HiddenColor,
+espR:Colorpicker({ Name = "Цель за стеной", Default = guiDefault("HiddenColor", Color3.fromRGB(255, 55, 55)),
     Callback = function(c) cfg.HiddenColor = c end }, "colHidden")
-espR:Colorpicker({ Name = "NPC", Default = cfg.NpcColor,
+espR:Colorpicker({ Name = "NPC", Default = guiDefault("NpcColor", Color3.fromRGB(255, 150, 50)),
     Callback = function(c) cfg.NpcColor = c end }, "colNpc")
 
 -- ---------- LOOT TAB ----------
@@ -2262,29 +2178,30 @@ local lootL = lootTab:Section({ Side = "Left" })
 local lootR = lootTab:Section({ Side = "Right" })
 
 lootL:Header({ Name = "ESP лута" })
-lootL:Toggle({ Name = "Включить ESP лута", Default = false,
+lootL:Toggle({ Name = "Включить ESP лута", Default = guiDefault("LootEnabled", false),
     Callback = function(v) cfg.LootEnabled = v; if v then rebuildLoot() end; ensureRender() end }, "lootEnabled")
-lootL:Slider({ Name = "Максимальная дистанция", Default = cfg.LootMaxDist,
+lootL:Slider({ Name = "Максимальная дистанция", Default = guiDefault("LootMaxDist", 120),
     Minimum = 20, Maximum = 300, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.LootMaxDist = v end }, "lootMaxDist")
-lootL:Toggle({ Name = "Названия и дистанция", Default = cfg.LootNames,
+lootL:Toggle({ Name = "Названия и дистанция", Default = guiDefault("LootNames", true),
     Callback = function(v) cfg.LootNames = v end }, "lootNames")
-lootL:Slider({ Name = "Минимальная цена", Default = cfg.LootMinPrice,
+lootL:Slider({ Name = "Минимальная цена", Default = guiDefault("LootMinPrice", 0),
     Minimum = 0, Maximum = 50000, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.LootMinPrice = v end }, "lootMinPrice")
-lootL:Slider({ Name = "Минимальная цена за кг", Default = cfg.LootMinPricePerKg,
+lootL:Slider({ Name = "Минимальная цена за кг", Default = guiDefault("LootMinPricePerKg", 0),
     Minimum = 0, Maximum = 25000, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.LootMinPricePerKg = v end }, "lootMinPpk")
+guiDefault("LootSort", "Distance")
 lootL:Dropdown({ Name = "Сортировка", Options = { "Расстояние", "Цена", "Цена/кг" },
     Default = 1, Multi = false, Callback = function(v) cfg.LootSort = ({["Расстояние"]="Distance", ["Цена"]="Price", ["Цена/кг"]="Price/kg", ["Distance"]="Distance", ["Price"]="Price", ["Price/kg"]="Price/kg"})[v] or "Distance" end }, "lootSort")
 lootL:Header({ Name = "Умный помощник" })
-lootL:Toggle({ Name = "Помощник по инвентарю", Default = cfg.InventoryHelper,
+lootL:Toggle({ Name = "Помощник по инвентарю", Default = guiDefault("InventoryHelper", true),
     Callback = function(v)
         cfg.InventoryHelper = v
         if not v then inventoryLabel.Visible = false end
         ensureRender()
     end }, "inventoryHelper")
-lootL:Toggle({ Name = "Квестовый помощник", Default = cfg.QuestHelper,
+lootL:Toggle({ Name = "Квестовый помощник", Default = guiDefault("QuestHelper", true),
     Callback = function(v)
         cfg.QuestHelper = v
         if not v then
@@ -2298,24 +2215,24 @@ lootL:Label({ Text = "Ближайшие объекты подсвечивают
 lootL:Label({ Text = "Золотой=элитный  Фиолетовый=ценный  Синий=средний" })
 
 lootR:Header({ Name = "Контейнеры" })
-lootR:Toggle({ Name = "Элитные (сейфы / военные)", Default = cfg.LootElite,
+lootR:Toggle({ Name = "Элитные: сейфы/военные", Default = guiDefault("LootElite", true),
     Callback = function(v) cfg.LootElite = v end }, "lootElite")
-lootR:Toggle({ Name = "Ценные (оружие / медицина)", Default = cfg.LootHigh,
+lootR:Toggle({ Name = "Ценные: оружие/мед.", Default = guiDefault("LootHigh", true),
     Callback = function(v) cfg.LootHigh = v end }, "lootHigh")
-lootR:Toggle({ Name = "Средние (кейсы / разное)", Default = cfg.LootMid,
+lootR:Toggle({ Name = "Средние: кейсы/разное", Default = guiDefault("LootMid", false),
     Callback = function(v) cfg.LootMid = v end }, "lootMid")
-lootR:Toggle({ Name = "Обычные (мебель)", Default = cfg.LootTrash,
+lootR:Toggle({ Name = "Обычные (мебель)", Default = guiDefault("LootTrash", false),
     Callback = function(v) cfg.LootTrash = v end }, "lootTrash")
 lootR:Header({ Name = "Прочее" })
-lootR:Toggle({ Name = "Предметы на земле", Default = cfg.LootItems,
+lootR:Toggle({ Name = "Предметы на земле", Default = guiDefault("LootItems", true),
     Callback = function(v) cfg.LootItems = v end }, "lootItems")
-lootR:Toggle({ Name = "Тела", Default = cfg.LootBodies,
+lootR:Toggle({ Name = "Тела", Default = guiDefault("LootBodies", true),
     Callback = function(v) cfg.LootBodies = v end }, "lootBodies")
-lootR:Toggle({ Name = "Показывать цену", Default = cfg.LootShowPrice,
+lootR:Toggle({ Name = "Показывать цену", Default = guiDefault("LootShowPrice", true),
     Callback = function(v) cfg.LootShowPrice = v end }, "lootPrice")
-lootR:Toggle({ Name = "Показывать категорию", Default = cfg.LootShowCategory,
+lootR:Toggle({ Name = "Показывать категорию", Default = guiDefault("LootShowCategory", false),
     Callback = function(v) cfg.LootShowCategory = v end }, "lootCategory")
-lootR:Toggle({ Name = "Список ценного лута", Default = cfg.LootList,
+lootR:Toggle({ Name = "Список ценного лута", Default = guiDefault("LootList", true),
     Callback = function(v) cfg.LootList = v end }, "lootList")
 
 -- ---------- WORLD TAB ----------
@@ -2324,37 +2241,35 @@ local worldL = worldTab:Section({ Side = "Left" })
 local worldR = worldTab:Section({ Side = "Right" })
 
 worldL:Header({ Name = "Карта" })
-worldL:Toggle({ Name = "ESP выходов", Default = cfg.ExfilESP,
+worldL:Toggle({ Name = "ESP выходов", Default = guiDefault("ExfilESP", true),
     Callback = function(v) cfg.ExfilESP = v; ensureRender() end }, "worldExfil")
-worldL:Toggle({ Name = "Таймер рейда", Default = cfg.RaidTimer,
+worldL:Toggle({ Name = "Таймер рейда", Default = guiDefault("RaidTimer", true),
     Callback = function(v) cfg.RaidTimer = v; ensureRender() end }, "worldTimer")
-worldL:Toggle({ Name = "Только доступные выходы", Default = cfg.ExfilOnlyAvailable,
+worldL:Toggle({ Name = "Доступные выходы", Default = guiDefault("ExfilOnlyAvailable", true),
     Callback = function(v) cfg.ExfilOnlyAvailable = v end }, "worldExfilAvailable")
-worldL:Toggle({ Name = "Показывать закрытые выходы", Default = cfg.ExfilShowLocked,
+worldL:Toggle({ Name = "Закрытые выходы", Default = guiDefault("ExfilShowLocked", true),
     Callback = function(v) cfg.ExfilShowLocked = v end }, "worldExfilLocked")
-worldL:Toggle({ Name = "Стрелки выходов за экраном", Default = cfg.ExfilOffscreen,
-    Callback = function(v) cfg.ExfilOffscreen = v end }, "worldExfilArrows")
-worldL:Toggle({ Name = "Выделять ближайший выход", Default = cfg.ExfilNearest,
+worldL:Toggle({ Name = "Ближайший выход", Default = guiDefault("ExfilNearest", true),
     Callback = function(v) cfg.ExfilNearest = v end }, "worldExfilNearest")
 worldL:Header({ Name = "Окружение" })
-worldL:Toggle({ Name = "Полная яркость", Default = false,
+worldL:Toggle({ Name = "Полная яркость", Default = guiDefault("Fullbright", false),
     Callback = function(v) cfg.Fullbright = v; if v then applyFullbright() else restoreFullbright() end end }, "worldFullbright")
 worldR:Header({ Name = "HUD рейда" })
-worldR:Toggle({ Name = "Предупреждения таймера", Default = cfg.RaidWarnings,
+worldR:Toggle({ Name = "Предупреждения таймера", Default = guiDefault("RaidWarnings", true),
     Callback = function(v) cfg.RaidWarnings = v end }, "worldWarnings")
-worldR:Toggle({ Name = "К/С сервера и 2XP", Default = cfg.ServerInfo,
+worldR:Toggle({ Name = "К/С сервера и 2XP", Default = guiDefault("ServerInfo", true),
     Callback = function(v) cfg.ServerInfo = v end }, "worldServerInfo")
-worldR:Toggle({ Name = "Автоопределение лобби / рейда", Default = cfg.ContextAuto,
+worldR:Toggle({ Name = "Авто: лобби / рейд", Default = guiDefault("ContextAuto", true),
     Callback = function(v) cfg.ContextAuto = v end }, "worldContext")
 worldR:Header({ Name = "Помощник по дверям" })
-worldR:Toggle({ Name = "ESP дверей", Default = cfg.DoorESP,
+worldR:Toggle({ Name = "ESP дверей", Default = guiDefault("DoorESP", true),
     Callback = function(v) cfg.DoorESP = v; if not v then hideDoors() end; ensureRender() end }, "doorEsp")
-worldR:Slider({ Name = "Дальность дверей", Default = cfg.DoorMaxDist,
+worldR:Slider({ Name = "Дальность дверей", Default = guiDefault("DoorMaxDist", 90),
     Minimum = 20, Maximum = 200, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.DoorMaxDist = v end }, "doorDistance")
-worldR:Toggle({ Name = "Только запертые / ключ / сломанные", Default = cfg.DoorOnlyInteresting,
+worldR:Toggle({ Name = "Только важные двери", Default = guiDefault("DoorOnlyInteresting", true),
     Callback = function(v) cfg.DoorOnlyInteresting = v end }, "doorInteresting")
-worldR:Toggle({ Name = "Проверять наличие ключей", Default = cfg.DoorCheckKeys,
+worldR:Toggle({ Name = "Проверять ключи", Default = guiDefault("DoorCheckKeys", true),
     Callback = function(v) cfg.DoorCheckKeys = v; ensureRender() end }, "doorKeys")
 worldR:Label({ Text = "HUD мира работает независимо от основного ESP." })
 
@@ -2364,50 +2279,53 @@ local aimLft = aimTab:Section({ Side = "Left" })
 local aimRgt = aimTab:Section({ Side = "Right" })
 
 aimLft:Header({ Name = "Помощь с прицелом" })
-aimLft:Toggle({ Name = "Включить помощь", Default = false,
+aimLft:Toggle({ Name = "Включить помощь", Default = guiDefault("AimEnabled", false),
     Callback = function(v) cfg.AimEnabled = v; ensureRender() end }, "aimEnabled")
-aimLft:Keybind({ Name = "Клавиша прицела (удерживать)", Default = Enum.UserInputType.MouseButton2,
+aimLft:Keybind({ Name = "Клавиша Aim (удерж.)", Default = Enum.UserInputType.MouseButton2,
     onBindHeld = function(held) aimHolding = held end }, "aimKey")
-aimLft:Toggle({ Name = "Показывать круг FOV", Default = cfg.AimShowFov,
+aimLft:Toggle({ Name = "Показывать круг FOV", Default = guiDefault("AimShowFov", true),
     Callback = function(v) cfg.AimShowFov = v end }, "aimShowFov")
 aimLft:Header({ Name = "Поведение" })
-aimLft:Slider({ Name = "Радиус FOV", Default = cfg.AimFov,
+aimLft:Slider({ Name = "Радиус FOV", Default = guiDefault("AimFov", 80),
     Minimum = 10, Maximum = 300, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimFov = v end }, "aimFov")
-aimLft:Slider({ Name = "Плавность", Default = cfg.AimSmoothness,
+aimLft:Slider({ Name = "Плавность", Default = guiDefault("AimSmoothness", 5),
     Minimum = 1, Maximum = 20, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimSmoothness = math.round(v) end }, "aimSmooth")
 aimLft:Label({ Text = "Чем выше значение, тем мягче и медленнее движение." })
-aimLft:Slider({ Name = "Мёртвая зона (пиксели)", Default = cfg.AimDeadzone,
+aimLft:Slider({ Name = "Мёртвая зона, px", Default = guiDefault("AimDeadzone", 1.5),
     Minimum = 0, Maximum = 10, DisplayMethod = "Round", Precision = 1,
     Callback = function(v) cfg.AimDeadzone = v end }, "aimDeadzone")
-aimLft:Slider({ Name = "Максимальный шаг мыши", Default = cfg.AimMaxStep,
+aimLft:Slider({ Name = "Макс. шаг мыши", Default = guiDefault("AimMaxStep", 24),
     Minimum = 5, Maximum = 80, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimMaxStep = v end }, "aimMaxStep")
-aimLft:Slider({ Name = "Максимальная дистанция", Default = cfg.AimMaxDist,
+aimLft:Slider({ Name = "Дальность Aim", Default = guiDefault("AimMaxDist", 300),
     Minimum = 50, Maximum = 800, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimMaxDist = v end }, "aimMaxDist")
 
 aimRgt:Header({ Name = "Выбор цели" })
-aimRgt:Dropdown({ Name = "Точка прицеливания", Options = { "Умная", "Голова", "Корпус", "Центр тела" },
+guiDefault("AimTargetPart", "Smart")
+aimRgt:Dropdown({ Name = "Точка Aim", Options = { "Умная", "Голова", "Корпус", "Центр тела" },
     Default = 1, Multi = false, Callback = function(v) cfg.AimTargetPart = ({["Умная"]="Smart", ["Голова"]="Head", ["Корпус"]="Body", ["Центр тела"]="Center", ["Smart"]="Smart", ["Head"]="Head", ["Body"]="Body", ["Torso"]="Body", ["Center"]="Center", ["HumanoidRootPart"]="Center"})[v] or "Smart" end }, "aimPart")
-aimRgt:Dropdown({ Name = "Приоритет цели", Options = { "Ближе к прицелу", "По дистанции", "Меньше здоровья" },
+guiDefault("AimPriority", "Crosshair")
+aimRgt:Dropdown({ Name = "Приоритет", Options = { "Ближе к прицелу", "По дистанции", "Меньше здоровья" },
     Default = 1, Multi = false, Callback = function(v) cfg.AimPriority = ({["Ближе к прицелу"]="Crosshair", ["По дистанции"]="Distance", ["Меньше здоровья"]="Lowest HP", ["Crosshair"]="Crosshair", ["Distance"]="Distance", ["Lowest HP"]="Lowest HP"})[v] or "Crosshair" end }, "aimPriority")
-aimRgt:Toggle({ Name = "Целиться в игроков", Default = cfg.AimTargetPlayers,
+aimRgt:Toggle({ Name = "Целиться в игроков", Default = guiDefault("AimTargetPlayers", true),
     Callback = function(v) cfg.AimTargetPlayers = v end }, "aimTgtPlr")
-aimRgt:Toggle({ Name = "Целиться в NPC", Default = cfg.AimTargetNpcs,
+aimRgt:Toggle({ Name = "Целиться в NPC", Default = guiDefault("AimTargetNpcs", true),
     Callback = function(v) cfg.AimTargetNpcs = v end }, "aimTgtNpc")
-aimRgt:Toggle({ Name = "Приоритет игроков над NPC", Default = cfg.AimPreferPlayers,
+aimRgt:Toggle({ Name = "Игроки важнее NPC", Default = guiDefault("AimPreferPlayers", true),
     Callback = function(v) cfg.AimPreferPlayers = v end }, "aimPreferPlayers")
-aimRgt:Toggle({ Name = "Проверять команду", Default = cfg.AimTeamCheck,
+aimRgt:Toggle({ Name = "Проверять команду", Default = guiDefault("AimTeamCheck", true),
     Callback = function(v) cfg.AimTeamCheck = v end }, "aimTeam")
-aimRgt:Toggle({ Name = "Проверять прямую видимость", Default = cfg.AimLosCheck,
+aimRgt:Toggle({ Name = "Проверка видимости", Default = guiDefault("AimLosCheck", true),
     Callback = function(v) cfg.AimLosCheck = v end }, "aimLos")
+guiDefault("AimRetention", "Soft")
 aimRgt:Dropdown({ Name = "Удержание цели", Options = { "Выключено", "Мягкое", "Жёсткое" },
     Default = 2, Multi = false, Callback = function(v) cfg.AimRetention = ({["Выключено"]="Off", ["Мягкое"]="Soft", ["Жёсткое"]="Hard", ["Off"]="Off", ["Soft"]="Soft", ["Hard"]="Hard"})[v] or "Soft" end }, "aimRetention")
 
 aimRgt:Header({ Name = "Белый список" })
-aimRgt:Keybind({ Name = "Добавить / убрать цель", Default = Enum.UserInputType.MouseButton3,
+aimRgt:Keybind({ Name = "Игнорировать цель", Default = Enum.UserInputType.MouseButton3,
     Callback = function() whitelistNearestPlayer() end }, "aimWlKey")
 aimRgt:Button({ Name = "Очистить белый список", Callback = function()
     aimWhitelist = {}
