@@ -273,7 +273,7 @@ local function hideEntry(d)
 end
 
 -- ============================================================
--- Line-of-sight raycasting (shared: visibility check + aim)
+-- Line-of-sight raycasting for ESP visibility colors
 -- ============================================================
 local rayParams = RaycastParams.new()
 rayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -875,6 +875,13 @@ local function getBackpackFrame()
     return hud and hud:FindFirstChild("backpackFrame")
 end
 
+local function getInventoryItemsRoot()
+    local bp = getBackpackFrame()
+    local playerFrame = bp and bp:FindFirstChild("player")
+    local inventoryFrame = playerFrame and playerFrame:FindFirstChild("inventoryFrame")
+    return inventoryFrame and inventoryFrame:FindFirstChild("items")
+end
+
 local function gridSlots(data)
     local size = data and data.gridSize
     if typeof(size) == "Vector2" then return math.max(1, math.floor(size.X * size.Y)) end
@@ -910,15 +917,26 @@ local function addInventoryItem(summary, inst, questFlag, seen)
     if not row.quest and (not summary.lowest or row.valuePerSlot < summary.lowest.valuePerSlot) then summary.lowest = row end
 end
 
+local function addOwnedReference(summary, inst, seen)
+    if not inst or seen[inst] then return end
+    seen[inst] = true
+    local name, data = itemMeta(inst)
+    if not data then return end
+    local resolvedName = name or inst.Name
+    local id = data.itemId or inst:GetAttribute("itemId") or inst:GetAttribute("id")
+    summary.ownedNames[string.lower(resolvedName)] = (summary.ownedNames[string.lower(resolvedName)] or 0) + 1
+    if id ~= nil then summary.ownedIds[tostring(id)] = (summary.ownedIds[tostring(id)] or 0) + 1 end
+end
+
 local function scanInventory()
     local summary = {
         totalValue = 0, totalWeight = 0, totalSlots = 0, count = 0,
         items = {}, ownedIds = {}, ownedNames = {}, lowest = nil, questCount = 0,
     }
     local seen = {}
-    local bp = getBackpackFrame()
-    if bp then
-        for _, frame in ipairs(bp:GetDescendants()) do
+    local itemsRoot = getInventoryItemsRoot()
+    if itemsRoot then
+        for _, frame in ipairs(itemsRoot:GetDescendants()) do
             if frame.Name == "itemFrame" and frame:IsA("GuiObject") then
                 local objectValue = frame:FindFirstChild("itemFolderObject")
                 local linked = objectValue and objectValue:IsA("ObjectValue") and objectValue.Value
@@ -930,7 +948,7 @@ local function scanInventory()
     local bag = player:FindFirstChild("Backpack")
     if bag then
         for _, object in ipairs(bag:GetDescendants()) do
-            if object:IsA("ObjectValue") and object.Value then addInventoryItem(summary, object.Value, false, seen) end
+            if object:IsA("ObjectValue") and object.Value then addOwnedReference(summary, object.Value, seen) end
         end
     end
     for _, row in ipairs(summary.items) do
@@ -1255,12 +1273,13 @@ local function drawLoot(myRoot, cam, dt)
         if alive and cfg.LootNames then
             local sc, on = cam:WorldToViewportPoint(e.top or e.pos)
             if on then
-                local extras = {}
-                if cfg.LootShowPrice and (e.price or 0) > 0 then extras[#extras + 1] = "$" .. tostring(math.floor(e.price)) end
-                if cfg.LootShowCategory and e.category then extras[#extras + 1] = tostring(e.category) end
-                local advice, adviceColor = cfg.InventoryHelper and lootAdvice(e) or nil
-                if advice then extras[#extras + 1] = advice end
-                txt.Text = string.format("%s%s  <font transparency='0.4'>%.0fм</font>", e.label, #extras > 0 and ("  [" .. table.concat(extras, " • ") .. "]") or "", (e.pos - myPos).Magnitude)
+                local parts = {e.label}
+                if cfg.LootShowPrice and (e.price or 0) > 0 then parts[#parts + 1] = "$" .. tostring(math.floor(e.price)) end
+                if cfg.LootShowCategory and e.category then parts[#parts + 1] = tostring(e.category) end
+                local advice, adviceColor = cfg.LootShowAdvice and lootAdvice(e) or nil
+                if advice then parts[#parts + 1] = advice end
+                parts[#parts + 1] = string.format("<font transparency='0.4'>%.0fм</font>", (e.pos - myPos).Magnitude)
+                txt.Text = table.concat(parts, " • ")
                 txt.Position = UDim2.fromOffset(sc.X, sc.Y)
                 txt.TextColor3 = adviceColor or e.color
                 txt.Visible = true
@@ -1275,9 +1294,12 @@ local function drawLoot(myRoot, cam, dt)
     for i, label in ipairs(lootListLabels) do
         local e = lootSelected[i]
         if cfg.LootList and e and e.inst and e.inst.Parent then
-            local value = (e.price or 0) > 0 and ("  $" .. tostring(math.floor(e.price))) or ""
-            local advice, adviceColor = cfg.InventoryHelper and lootAdvice(e) or nil
-            label.Text = string.format("%s%s%s  •  %.0fм", e.label, value, advice and ("  [" .. advice .. "]") or "", (e.pos - myPos).Magnitude)
+            local parts = {e.label}
+            if cfg.LootShowPrice and (e.price or 0) > 0 then parts[#parts + 1] = "$" .. tostring(math.floor(e.price)) end
+            local advice, adviceColor = cfg.LootShowAdvice and lootAdvice(e) or nil
+            if advice then parts[#parts + 1] = advice end
+            parts[#parts + 1] = string.format("%.0fм", (e.pos - myPos).Magnitude)
+            label.Text = table.concat(parts, " • ")
             label.TextColor3 = adviceColor or e.color
             label.Visible = true
         else
@@ -1481,6 +1503,9 @@ end
 local aimTarget = nil
 local aimOccludedAt = nil
 local aimMouseWarningShown = false
+local smartHeadBlockedAt = setmetatable({}, { __mode = "k" })
+local gunProfileCache = setmetatable({}, { __mode = "k" })
+local getGunAimState = function() return nil end
 local aimWhitelist = {}  -- [UserId] = true; aim ignores these players
 local WHITELIST_FILE = "hako/aim_whitelist.json"
 
@@ -1508,6 +1533,34 @@ local fovCircle = newInst("Frame", {
 mkCorner(fovCircle, 999)
 mkStroke(fovCircle, FOV_COL, 1.5, 0.4)
 
+local aimRayParams = RaycastParams.new()
+aimRayParams.FilterType = Enum.RaycastFilterType.Exclude
+aimRayParams.IgnoreWater = true
+
+local function hasAimLineOfSight(cam, targetPart)
+    local filter = {}
+    local character = player.Character
+    if character then filter[#filter + 1] = character end
+    filter[#filter + 1] = cam
+    local origin = cam.CFrame.Position
+
+    -- Skip a few non-collidable decorative hits (grass, effects, loose visual
+    -- meshes). Solid and invisible colliders still block the aim ray.
+    for _ = 1, 6 do
+        aimRayParams.FilterDescendantsInstances = filter
+        local result = workspace:Raycast(origin, targetPart.Position - origin, aimRayParams)
+        if not result then return true end
+        local hit = result.Instance
+        if hit and hit:IsDescendantOf(targetPart.Parent) then return true end
+        if hit and hit:IsA("BasePart") and not hit.CanCollide then
+            filter[#filter + 1] = hit
+        else
+            return false
+        end
+    end
+    return false
+end
+
 local function aimParts(model)
     local result, seen = {}, {}
     local function add(name)
@@ -1532,8 +1585,22 @@ local function aimParts(model)
 end
 
 local function resolveAimPart(model, cam)
-    for _, part in ipairs(aimParts(model)) do
-        if not cfg.AimLosCheck or hasLineOfSight(cam, part) then return part end
+    local parts = aimParts(model)
+    if cfg.AimTargetPart == "Smart" and parts[1] and parts[1].Name == "Head" then
+        local head = parts[1]
+        if not cfg.AimLosCheck or hasAimLineOfSight(cam, head) then
+            smartHeadBlockedAt[model] = nil
+            return head
+        end
+        smartHeadBlockedAt[model] = smartHeadBlockedAt[model] or os.clock()
+        if os.clock() - smartHeadBlockedAt[model] < 0.18 then return nil end
+        for i = 2, #parts do
+            if not cfg.AimLosCheck or hasAimLineOfSight(cam, parts[i]) then return parts[i] end
+        end
+        return nil
+    end
+    for _, part in ipairs(parts) do
+        if not cfg.AimLosCheck or hasAimLineOfSight(cam, part) then return part end
     end
     return nil
 end
@@ -1635,8 +1702,75 @@ local function isTargetStillValid(cam, myRoot)
     local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
     local screenDistance = (Vector2.new(screen.X, screen.Y) - center).Magnitude
     local breakMultiplier = cfg.AimRetention == "Hard" and 1.75 or 1.25
+    local gunState = getGunAimState()
+    if cfg.AimRecoilCompensation and gunState and gunState.recovering then
+        breakMultiplier = breakMultiplier + 0.5 * gunState.recoilFactor
+    end
     if screenDistance > cfg.AimFov * breakMultiplier then return false end
     return true
+end
+
+-- Read-only weapon adaptation. The game exposes the equipped gun's recoil
+-- profile through Storage.Modules.Weapons and its live spread through RateHeat.
+-- We never write either value and never call a firing RemoteEvent.
+local function equippedGun()
+    local character = player.Character
+    local tool = character and character:FindFirstChildWhichIsA("Tool")
+    if not tool or tool:GetAttribute("Gun") ~= true then return nil end
+    return tool
+end
+
+local function automaticGunProfile(tool)
+    if not tool then return nil end
+    local storage = ReplicatedStorage:FindFirstChild("Storage")
+    local modules = storage and storage:FindFirstChild("Modules")
+    local weapons = modules and modules:FindFirstChild("Weapons")
+    local configModule = weapons and weapons:FindFirstChild(tool.Name)
+    if not configModule or not configModule:IsA("ModuleScript") then return nil end
+
+    local cached = gunProfileCache[configModule]
+    if cached ~= nil then return cached or nil end
+
+    local ok, data = pcall(require, configModule)
+    if not ok or type(data) ~= "table" then
+        gunProfileCache[configModule] = false
+        return nil
+    end
+
+    local recoil = type(data.recoil) == "table" and data.recoil or {}
+    local minPower = tonumber(recoil.minRecoilPower) or 1
+    local maxPower = tonumber(recoil.maxRecoilPower) or minPower
+    local punch = tonumber(recoil.recoilPunch) or 0
+    local fireRate = tonumber(data.rate) or tonumber(tool:GetAttribute("FireRate")) or 600
+    local profile = {
+        fireRate = math.max(fireRate, 1),
+        recoveryTime = math.clamp(math.max(tonumber(recoil.punchRecover) or 0.15, 60 / math.max(fireRate, 1) * 1.35), 0.08, 0.55),
+        recoilFactor = math.clamp(((minPower + maxPower) * 0.5) / 4 + punch * 0.65, 0.35, 2.5),
+        shotgun = data.shotgun == true or (tonumber(data.amountPerRound) or 1) > 1,
+    }
+    gunProfileCache[configModule] = profile
+    return profile
+end
+
+getGunAimState = function()
+    local tool = equippedGun()
+    if not tool then return nil end
+    local profile = automaticGunProfile(tool) or {
+        fireRate = tonumber(tool:GetAttribute("FireRate")) or 600,
+        recoveryTime = 0.16,
+        recoilFactor = 1,
+        shotgun = false,
+    }
+    local lastFired = tonumber(tool:GetAttribute("LastFired"))
+    local shotAge = lastFired and (os.clock() - lastFired) or math.huge
+    local heat = math.clamp(tonumber(tool:GetAttribute("RateHeat")) or 0, 0, 1)
+    return {
+        tool = tool,
+        heat = heat,
+        recovering = shotAge >= 0 and shotAge <= profile.recoveryTime,
+        recoilFactor = profile.recoilFactor,
+        shotgun = profile.shotgun,
+    }
 end
 
 -- Toggle the player nearest the crosshair in/out of the aim whitelist
@@ -1738,15 +1872,26 @@ local function updateAim(dt, cam, vpSize, myRoot)
     if not onScreen then return end
     local dx = screen.X - vpSize.X / 2
     local dy = screen.Y - vpSize.Y / 2
-    if math.sqrt(dx * dx + dy * dy) <= cfg.AimDeadzone then return end
+    local gunState = getGunAimState()
+    local deadzone = cfg.AimDeadzone
+    if cfg.AimSpreadStabilization and gunState then
+        deadzone = deadzone + gunState.heat * cfg.AimSpreadDeadzone
+    end
+    if math.sqrt(dx * dx + dy * dy) <= deadzone then return end
     -- Frame-rate independent: alpha is the fraction of the gap to cover this
     -- frame, normalised by dt so "Smoothness" feels the same at 30 or 144 FPS.
     local rate = 60 / math.max(cfg.AimSmoothness, 1)
+    local maxStep = cfg.AimMaxStep
+    if cfg.AimRecoilCompensation and gunState and gunState.recovering then
+        local strength = math.clamp((cfg.AimRecoilStrength or 100) / 100, 0, 1.5) * gunState.recoilFactor
+        rate = rate * (1 + strength * 0.9)
+        maxStep = math.min(maxStep * (1 + strength * 0.7), 120)
+    end
     local alpha = 1 - math.exp(-(dt or 0.016) * rate)
     local moveX, moveY = dx * alpha, dy * alpha
     local moveMagnitude = math.sqrt(moveX * moveX + moveY * moveY)
-    if moveMagnitude > cfg.AimMaxStep and moveMagnitude > 0 then
-        local scale = cfg.AimMaxStep / moveMagnitude
+    if moveMagnitude > maxStep and moveMagnitude > 0 then
+        local scale = maxStep / moveMagnitude
         moveX, moveY = moveX * scale, moveY * scale
     end
     mousemoverel(moveX, moveY)
@@ -1901,7 +2046,8 @@ local function onRender(dt)
     end
     if cfg.RaidTimer then updateRaidTimer(dt) else raidPill.Visible = false end
 
-    local wantsIntel = cfg.InventoryHelper or cfg.QuestHelper or (cfg.DoorESP and cfg.DoorCheckKeys)
+    local wantsIntel = cfg.InventoryHelper or cfg.QuestHelper
+        or (cfg.LootEnabled and cfg.LootShowAdvice) or (cfg.DoorESP and cfg.DoorCheckKeys)
     if wantsIntel then
         intelAccum = intelAccum + dt
         if intelAccum >= 0.75 then
@@ -2114,6 +2260,7 @@ local espR = espTab:Section({ Side = "Right" })
 espL:Header({ Name = "Основное" })
 espL:Toggle({ Name = "Включить ESP", Default = guiDefault("Enabled", false),
     Callback = function(v) cfg.Enabled = v; ensureRender() end }, "espEnabled")
+espL:Header({ Name = "Цели" })
 espL:Toggle({ Name = "ESP игроков", Default = guiDefault("PlayerESP", true),
     Callback = function(v) cfg.PlayerESP = v end }, "espPlayers")
 espL:Toggle({ Name = "ESP NPC", Default = guiDefault("NpcESP", true),
@@ -2126,16 +2273,6 @@ guiDefault("NpcNameFilter", "")
 espL:Input({ Name = "Фильтр имени NPC", Placeholder = "пусто = все", AcceptedCharacters = "All",
     Callback = function(v) cfg.NpcNameFilter = tostring(v or "") end,
     onChanged = function(v) cfg.NpcNameFilter = tostring(v or "") end }, "espNpcFilter")
-espL:Label({ Text = "Игроки: зелёный = виден, красный = за стеной" })
-espL:Header({ Name = "Контур и подсветка" })
-guiDefault("VisualMode", "Outline")
-espL:Dropdown({ Name = "Режим подсветки", Options = { "Выключено", "Контур", "Заливка", "Контур + заливка" },
-    Default = 2, Multi = false, Callback = function(v)
-        cfg.VisualMode = ({["Выключено"]="Off", ["Контур"]="Outline", ["Заливка"]="Fill", ["Контур + заливка"]="Both", ["Off"]="Off", ["Outline"]="Outline", ["Fill"]="Fill", ["Both"]="Both"})[v] or "Outline"
-    end }, "espVisualMode")
-espL:Slider({ Name = "Прозрачность заливки", Default = guiDefault("ChamsOpacity", 55),
-    Minimum = 0, Maximum = 100, DisplayMethod = "Round", Precision = 0,
-    Callback = function(v) cfg.ChamsOpacity = v end }, "espChamsOp")
 espL:Header({ Name = "Дальность" })
 espL:Toggle({ Name = "Раздельная дальность", Default = guiDefault("SeparateRanges", false),
     Callback = function(v) cfg.SeparateRanges = v end }, "espSeparateRange")
@@ -2148,22 +2285,25 @@ espL:Slider({ Name = "Дистанция игроков", Default = guiDefault("
 espL:Slider({ Name = "Дистанция NPC", Default = guiDefault("NpcMaxDistance", 250),
     Minimum = 50, Maximum = 1000, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.NpcMaxDistance = v end }, "espNpcMaxDist")
-espL:Label({ Text = "При выключенном тумблере используется общая дистанция." })
 
-espR:Header({ Name = "Детали" })
+espR:Header({ Name = "Отображение" })
+guiDefault("VisualMode", "Outline")
+espR:Dropdown({ Name = "Режим подсветки", Options = { "Выключено", "Контур", "Заливка", "Контур + заливка" },
+    Default = 2, Multi = false, Callback = function(v)
+        cfg.VisualMode = ({["Выключено"]="Off", ["Контур"]="Outline", ["Заливка"]="Fill", ["Контур + заливка"]="Both", ["Off"]="Off", ["Outline"]="Outline", ["Fill"]="Fill", ["Both"]="Both"})[v] or "Outline"
+    end }, "espVisualMode")
+espR:Slider({ Name = "Прозрачность заливки", Default = guiDefault("ChamsOpacity", 55),
+    Minimum = 0, Maximum = 100, DisplayMethod = "Round", Precision = 0,
+    Callback = function(v) cfg.ChamsOpacity = v end }, "espChamsOp")
 guiDefault("DetailMode", "Full")
 espR:Dropdown({ Name = "Уровень информации", Options = { "Минимальный", "Боевой", "Полный" },
     Default = 3, Multi = false, Callback = function(v)
         cfg.DetailMode = ({["Минимальный"]="Minimal", ["Боевой"]="Combat", ["Полный"]="Full", ["Minimal"]="Minimal", ["Combat"]="Combat", ["Full"]="Full"})[v] or "Full"
     end }, "espDetailMode")
-espR:Label({ Text = "Минимальный: имя и дистанция" })
-espR:Label({ Text = "Боевой: + здоровье; Полный: + оружие" })
 espR:Toggle({ Name = "Линии до игроков", Default = guiDefault("Tracers", false),
     Callback = function(v) cfg.Tracers = v end }, "espTracers")
 espR:Toggle({ Name = "Затухание по дистанции", Default = guiDefault("DistanceFade", true),
     Callback = function(v) cfg.DistanceFade = v end }, "espFade")
-espR:Toggle({ Name = "Панель угроз", Default = guiDefault("ThreatPanel", true),
-    Callback = function(v) cfg.ThreatPanel = v end }, "espThreatPanel")
 espR:Header({ Name = "Цвета" })
 espR:Colorpicker({ Name = "Видимая цель", Default = guiDefault("VisibleColor", Color3.fromRGB(70, 255, 120)),
     Callback = function(c) cfg.VisibleColor = c end }, "colVisible")
@@ -2185,34 +2325,16 @@ lootL:Slider({ Name = "Максимальная дистанция", Default = g
     Callback = function(v) cfg.LootMaxDist = v end }, "lootMaxDist")
 lootL:Toggle({ Name = "Названия и дистанция", Default = guiDefault("LootNames", true),
     Callback = function(v) cfg.LootNames = v end }, "lootNames")
+guiDefault("LootSort", "Distance")
+lootL:Dropdown({ Name = "Сортировка", Options = { "Расстояние", "Цена", "Цена/кг" },
+    Default = 1, Multi = false, Callback = function(v) cfg.LootSort = ({["Расстояние"]="Distance", ["Цена"]="Price", ["Цена/кг"]="Price/kg", ["Distance"]="Distance", ["Price"]="Price", ["Price/kg"]="Price/kg"})[v] or "Distance" end }, "lootSort")
+lootL:Header({ Name = "Ценовые фильтры" })
 lootL:Slider({ Name = "Минимальная цена", Default = guiDefault("LootMinPrice", 0),
     Minimum = 0, Maximum = 50000, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.LootMinPrice = v end }, "lootMinPrice")
 lootL:Slider({ Name = "Минимальная цена за кг", Default = guiDefault("LootMinPricePerKg", 0),
     Minimum = 0, Maximum = 25000, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.LootMinPricePerKg = v end }, "lootMinPpk")
-guiDefault("LootSort", "Distance")
-lootL:Dropdown({ Name = "Сортировка", Options = { "Расстояние", "Цена", "Цена/кг" },
-    Default = 1, Multi = false, Callback = function(v) cfg.LootSort = ({["Расстояние"]="Distance", ["Цена"]="Price", ["Цена/кг"]="Price/kg", ["Distance"]="Distance", ["Price"]="Price", ["Price/kg"]="Price/kg"})[v] or "Distance" end }, "lootSort")
-lootL:Header({ Name = "Умный помощник" })
-lootL:Toggle({ Name = "Помощник по инвентарю", Default = guiDefault("InventoryHelper", true),
-    Callback = function(v)
-        cfg.InventoryHelper = v
-        if not v then inventoryLabel.Visible = false end
-        ensureRender()
-    end }, "inventoryHelper")
-lootL:Toggle({ Name = "Квестовый помощник", Default = guiDefault("QuestHelper", true),
-    Callback = function(v)
-        cfg.QuestHelper = v
-        if not v then
-            activeQuestItems = {}
-            questPlannerLabel.Visible = false
-            clearQuestHL()
-        end
-        ensureRender()
-    end }, "questHelper")
-lootL:Label({ Text = "Ближайшие объекты подсвечиваются и подписываются." })
-lootL:Label({ Text = "Золотой=элитный  Фиолетовый=ценный  Синий=средний" })
 
 lootR:Header({ Name = "Контейнеры" })
 lootR:Toggle({ Name = "Элитные: сейфы/военные", Default = guiDefault("LootElite", true),
@@ -2232,36 +2354,64 @@ lootR:Toggle({ Name = "Показывать цену", Default = guiDefault("Loo
     Callback = function(v) cfg.LootShowPrice = v end }, "lootPrice")
 lootR:Toggle({ Name = "Показывать категорию", Default = guiDefault("LootShowCategory", false),
     Callback = function(v) cfg.LootShowCategory = v end }, "lootCategory")
-lootR:Toggle({ Name = "Список ценного лута", Default = guiDefault("LootList", true),
+
+-- ---------- HELPERS TAB ----------
+local helperTab = Tabs:Tab({ Name = "Помощники" })
+local helperL = helperTab:Section({ Side = "Left" })
+local helperR = helperTab:Section({ Side = "Right" })
+
+helperL:Header({ Name = "Рейд" })
+helperL:Toggle({ Name = "Помощник по инвентарю", Default = guiDefault("InventoryHelper", true),
+    Callback = function(v)
+        cfg.InventoryHelper = v
+        if not v then inventoryLabel.Visible = false end
+        ensureRender()
+    end }, "inventoryHelper")
+helperL:Toggle({ Name = "Квестовый помощник", Default = guiDefault("QuestHelper", true),
+    Callback = function(v)
+        cfg.QuestHelper = v
+        if not v then
+            activeQuestItems = {}
+            questPlannerLabel.Visible = false
+            clearQuestHL()
+        end
+        ensureRender()
+    end }, "questHelper")
+helperL:Toggle({ Name = "Панель угроз", Default = guiDefault("ThreatPanel", true),
+    Callback = function(v) cfg.ThreatPanel = v end }, "espThreatPanel")
+
+helperR:Header({ Name = "Информация о луте" })
+helperR:Toggle({ Name = "Список ценного лута", Default = guiDefault("LootList", true),
     Callback = function(v) cfg.LootList = v end }, "lootList")
+helperR:Toggle({ Name = "Советы над предметами", Default = guiDefault("LootShowAdvice", false),
+    Callback = function(v) cfg.LootShowAdvice = v; ensureRender() end }, "lootAdvice")
+helperR:Label({ Text = "Подсказки появляются только при включённом ESP лута." })
 
 -- ---------- WORLD TAB ----------
 local worldTab = Tabs:Tab({ Name = "Мир" })
 local worldL = worldTab:Section({ Side = "Left" })
 local worldR = worldTab:Section({ Side = "Right" })
 
-worldL:Header({ Name = "Карта" })
+worldL:Header({ Name = "Выходы" })
 worldL:Toggle({ Name = "ESP выходов", Default = guiDefault("ExfilESP", true),
     Callback = function(v) cfg.ExfilESP = v; ensureRender() end }, "worldExfil")
-worldL:Toggle({ Name = "Таймер рейда", Default = guiDefault("RaidTimer", true),
-    Callback = function(v) cfg.RaidTimer = v; ensureRender() end }, "worldTimer")
 worldL:Toggle({ Name = "Доступные выходы", Default = guiDefault("ExfilOnlyAvailable", true),
     Callback = function(v) cfg.ExfilOnlyAvailable = v end }, "worldExfilAvailable")
 worldL:Toggle({ Name = "Закрытые выходы", Default = guiDefault("ExfilShowLocked", true),
     Callback = function(v) cfg.ExfilShowLocked = v end }, "worldExfilLocked")
 worldL:Toggle({ Name = "Ближайший выход", Default = guiDefault("ExfilNearest", true),
     Callback = function(v) cfg.ExfilNearest = v end }, "worldExfilNearest")
-worldL:Header({ Name = "Окружение" })
-worldL:Toggle({ Name = "Полная яркость", Default = guiDefault("Fullbright", false),
-    Callback = function(v) cfg.Fullbright = v; if v then applyFullbright() else restoreFullbright() end end }, "worldFullbright")
-worldR:Header({ Name = "HUD рейда" })
-worldR:Toggle({ Name = "Предупреждения таймера", Default = guiDefault("RaidWarnings", true),
+worldL:Header({ Name = "Рейд" })
+worldL:Toggle({ Name = "Таймер рейда", Default = guiDefault("RaidTimer", true),
+    Callback = function(v) cfg.RaidTimer = v; ensureRender() end }, "worldTimer")
+worldL:Toggle({ Name = "Предупреждения таймера", Default = guiDefault("RaidWarnings", true),
     Callback = function(v) cfg.RaidWarnings = v end }, "worldWarnings")
-worldR:Toggle({ Name = "К/С сервера и 2XP", Default = guiDefault("ServerInfo", true),
+worldL:Toggle({ Name = "К/С сервера и 2XP", Default = guiDefault("ServerInfo", true),
     Callback = function(v) cfg.ServerInfo = v end }, "worldServerInfo")
-worldR:Toggle({ Name = "Авто: лобби / рейд", Default = guiDefault("ContextAuto", true),
+worldL:Toggle({ Name = "Авто: лобби / рейд", Default = guiDefault("ContextAuto", true),
     Callback = function(v) cfg.ContextAuto = v end }, "worldContext")
-worldR:Header({ Name = "Помощник по дверям" })
+
+worldR:Header({ Name = "Двери" })
 worldR:Toggle({ Name = "ESP дверей", Default = guiDefault("DoorESP", true),
     Callback = function(v) cfg.DoorESP = v; if not v then hideDoors() end; ensureRender() end }, "doorEsp")
 worldR:Slider({ Name = "Дальность дверей", Default = guiDefault("DoorMaxDist", 90),
@@ -2271,37 +2421,51 @@ worldR:Toggle({ Name = "Только важные двери", Default = guiDefa
     Callback = function(v) cfg.DoorOnlyInteresting = v end }, "doorInteresting")
 worldR:Toggle({ Name = "Проверять ключи", Default = guiDefault("DoorCheckKeys", true),
     Callback = function(v) cfg.DoorCheckKeys = v; ensureRender() end }, "doorKeys")
-worldR:Label({ Text = "HUD мира работает независимо от основного ESP." })
+worldR:Header({ Name = "Окружение" })
+worldR:Toggle({ Name = "Полная яркость", Default = guiDefault("Fullbright", false),
+    Callback = function(v) cfg.Fullbright = v; if v then applyFullbright() else restoreFullbright() end end }, "worldFullbright")
 
 -- ---------- AIM TAB ----------
 local aimTab = Tabs:Tab({ Name = "Прицел" })
 local aimLft = aimTab:Section({ Side = "Left" })
 local aimRgt = aimTab:Section({ Side = "Right" })
 
-aimLft:Header({ Name = "Помощь с прицелом" })
+aimLft:Header({ Name = "Основное" })
 aimLft:Toggle({ Name = "Включить помощь", Default = guiDefault("AimEnabled", false),
     Callback = function(v) cfg.AimEnabled = v; ensureRender() end }, "aimEnabled")
 aimLft:Keybind({ Name = "Клавиша Aim (удерж.)", Default = Enum.UserInputType.MouseButton2,
     onBindHeld = function(held) aimHolding = held end }, "aimKey")
+aimLft:Header({ Name = "Область наведения" })
 aimLft:Toggle({ Name = "Показывать круг FOV", Default = guiDefault("AimShowFov", true),
     Callback = function(v) cfg.AimShowFov = v end }, "aimShowFov")
-aimLft:Header({ Name = "Поведение" })
 aimLft:Slider({ Name = "Радиус FOV", Default = guiDefault("AimFov", 80),
     Minimum = 10, Maximum = 300, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimFov = v end }, "aimFov")
+aimLft:Slider({ Name = "Дальность Aim", Default = guiDefault("AimMaxDist", 300),
+    Minimum = 50, Maximum = 800, DisplayMethod = "Round", Precision = 0,
+    Callback = function(v) cfg.AimMaxDist = v end }, "aimMaxDist")
+aimLft:Header({ Name = "Движение мыши" })
 aimLft:Slider({ Name = "Плавность", Default = guiDefault("AimSmoothness", 5),
     Minimum = 1, Maximum = 20, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimSmoothness = math.round(v) end }, "aimSmooth")
-aimLft:Label({ Text = "Чем выше значение, тем мягче и медленнее движение." })
 aimLft:Slider({ Name = "Мёртвая зона, px", Default = guiDefault("AimDeadzone", 1.5),
     Minimum = 0, Maximum = 10, DisplayMethod = "Round", Precision = 1,
     Callback = function(v) cfg.AimDeadzone = v end }, "aimDeadzone")
 aimLft:Slider({ Name = "Макс. шаг мыши", Default = guiDefault("AimMaxStep", 24),
     Minimum = 5, Maximum = 80, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimMaxStep = v end }, "aimMaxStep")
-aimLft:Slider({ Name = "Дальность Aim", Default = guiDefault("AimMaxDist", 300),
-    Minimum = 50, Maximum = 800, DisplayMethod = "Round", Precision = 0,
-    Callback = function(v) cfg.AimMaxDist = v end }, "aimMaxDist")
+aimLft:Header({ Name = "Адаптация оружия" })
+aimLft:Toggle({ Name = "Компенсация отдачи", Default = guiDefault("AimRecoilCompensation", true),
+    Callback = function(v) cfg.AimRecoilCompensation = v end }, "aimRecoilCompensation")
+aimLft:Slider({ Name = "Сила возврата, %", Default = guiDefault("AimRecoilStrength", 100),
+    Minimum = 0, Maximum = 150, DisplayMethod = "Round", Precision = 0,
+    Callback = function(v) cfg.AimRecoilStrength = v end }, "aimRecoilStrength")
+aimLft:Toggle({ Name = "Стабилизация разброса", Default = guiDefault("AimSpreadStabilization", true),
+    Callback = function(v) cfg.AimSpreadStabilization = v end }, "aimSpreadStabilization")
+aimLft:Slider({ Name = "Стабилизация, px", Default = guiDefault("AimSpreadDeadzone", 2),
+    Minimum = 0, Maximum = 8, DisplayMethod = "Round", Precision = 1,
+    Callback = function(v) cfg.AimSpreadDeadzone = v end }, "aimSpreadDeadzone")
+aimLft:Label({ Text = "Автопрофиль: пистолеты, автоматы, винтовки и дробовики." })
 
 aimRgt:Header({ Name = "Выбор цели" })
 guiDefault("AimTargetPart", "Smart")
@@ -2316,6 +2480,7 @@ aimRgt:Toggle({ Name = "Целиться в NPC", Default = guiDefault("AimTarge
     Callback = function(v) cfg.AimTargetNpcs = v end }, "aimTgtNpc")
 aimRgt:Toggle({ Name = "Игроки важнее NPC", Default = guiDefault("AimPreferPlayers", true),
     Callback = function(v) cfg.AimPreferPlayers = v end }, "aimPreferPlayers")
+aimRgt:Header({ Name = "Проверки и удержание" })
 aimRgt:Toggle({ Name = "Проверять команду", Default = guiDefault("AimTeamCheck", true),
     Callback = function(v) cfg.AimTeamCheck = v end }, "aimTeam")
 aimRgt:Toggle({ Name = "Проверка видимости", Default = guiDefault("AimLosCheck", true),
