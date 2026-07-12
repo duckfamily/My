@@ -1295,9 +1295,10 @@ aimLft:Header({ Name = "Behavior" })
 aimLft:Slider({ Name = "FOV Radius", Default = cfg.AimFov,
     Minimum = 10, Maximum = 300, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimFov = v end }, "aimFov")
-aimLft:Slider({ Name = "Smoothness (higher = softer)", Default = cfg.AimSmoothness,
+aimLft:Slider({ Name = "Smoothness", Default = cfg.AimSmoothness,
     Minimum = 1, Maximum = 20, DisplayMethod = "Round", Precision = 0,
-    Callback = function(v) cfg.AimSmoothness = v end }, "aimSmooth")
+    Callback = function(v) cfg.AimSmoothness = math.round(v) end }, "aimSmooth")
+aimLft:Label({ Text = "Smoothness: higher = softer / slower" })
 aimLft:Slider({ Name = "Max Distance", Default = cfg.AimMaxDist,
     Minimum = 50, Maximum = 800, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimMaxDist = v end }, "aimMaxDist")
