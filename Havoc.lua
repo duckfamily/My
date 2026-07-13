@@ -75,13 +75,26 @@ if not okLib or not MacLib then
     end)
     return
 end
-pcall(function() MacLib:SetFolder("hako") end)
-
 -- MacLib's bundled config parser skips Toggle=false during load and serializes
 -- the Keybind:Bind method instead of the currently selected key. Keep its GUI,
 -- folder layout and autoload UI, but replace only the serializer so every
 -- control round-trips correctly (including MouseButton keybinds).
 do
+    local function ensureConfigFolders()
+        if not (isfolder and makefolder) then return false, "Folder API unavailable." end
+        for _, path in ipairs({ "hako", "hako/settings" }) do
+            if not isfolder(path) then
+                local ok, err = pcall(makefolder, path)
+                if not ok and not isfolder(path) then return false, tostring(err) end
+            end
+        end
+        return true
+    end
+
+    local folderOk, folderError = ensureConfigFolders()
+    if not folderOk then warn("[HAKO] Config folder error: " .. tostring(folderError)) end
+    pcall(function() MacLib:SetFolder("hako") end)
+
     local function colorToHex(color)
         return string.format("#%02X%02X%02X",
             math.floor(math.clamp(color.R, 0, 1) * 255 + 0.5),
@@ -97,11 +110,19 @@ do
             tonumber(hex:sub(6, 7), 16))
     end
 
+    local function enumByName(enumType, name)
+        if type(name) ~= "string" then return nil end
+        local ok, value = pcall(function() return enumType[name] end)
+        return ok and value or nil
+    end
+
     function MacLib:SaveConfig(path)
         if not writefile then return false, "Config system unavailable." end
         if not path or tostring(path):gsub("%s", "") == "" then
             return false, "Please select a config file."
         end
+        local foldersOk, foldersError = ensureConfigFolders()
+        if not foldersOk then return false, foldersError end
 
         local objects = {}
         for flag, option in pairs(MacLib.Options or {}) do
@@ -120,7 +141,8 @@ do
                     local bind = option.GetBind and option:GetBind() or nil
                     if typeof(bind) == "EnumItem" then
                         object.bind = bind.Name
-                        object.bindType = tostring(bind.EnumType)
+                        object.bindType = string.find(tostring(bind.EnumType), "UserInputType", 1, true)
+                            and "UserInputType" or "KeyCode"
                     end
                 elseif class == "Dropdown" then
                     object.value = option.Value
@@ -140,6 +162,15 @@ do
         local fullPath = MacLib.Folder .. "/settings/" .. tostring(path) .. ".json"
         local wrote, err = pcall(writefile, fullPath, encoded)
         if not wrote then return false, tostring(err) end
+        if isfile and not isfile(fullPath) then return false, "Executor did not create the config file." end
+        if readfile then
+            local readOk, saved = pcall(readfile, fullPath)
+            if not readOk or saved ~= encoded then return false, "Config verification failed after write." end
+            local verifyOk, verified = pcall(HttpService.JSONDecode, HttpService, saved)
+            if not verifyOk or type(verified) ~= "table" or type(verified.objects) ~= "table" then
+                return false, "Saved config JSON is invalid."
+            end
+        end
         return true
     end
 
@@ -148,6 +179,8 @@ do
         if not path or tostring(path):gsub("%s", "") == "" then
             return false, "Please select a config file."
         end
+        local foldersOk, foldersError = ensureConfigFolders()
+        if not foldersOk then return false, foldersError end
 
         local file = MacLib.Folder .. "/settings/" .. tostring(path) .. ".json"
         if not isfile(file) then return false, "Invalid file" end
@@ -176,13 +209,14 @@ do
                         option:UpdateText(object.text)
                     elseif object.type == "Keybind" and object.bind then
                         local bind
-                        if object.bindType == "Enum.UserInputType" then
-                            bind = Enum.UserInputType[object.bind]
-                        elseif object.bindType == "Enum.KeyCode" then
-                            bind = Enum.KeyCode[object.bind]
+                        if string.find(tostring(object.bindType), "UserInputType", 1, true) then
+                            bind = enumByName(Enum.UserInputType, object.bind)
+                        elseif string.find(tostring(object.bindType), "KeyCode", 1, true) then
+                            bind = enumByName(Enum.KeyCode, object.bind)
                         else
                             -- Compatibility with version-1 MacLib configs.
-                            bind = Enum.KeyCode[object.bind] or Enum.UserInputType[object.bind]
+                            bind = enumByName(Enum.KeyCode, object.bind)
+                                or enumByName(Enum.UserInputType, object.bind)
                         end
                         if bind then option:Bind(bind) end
                     elseif object.type == "Dropdown" and object.value ~= nil then
@@ -199,6 +233,12 @@ do
         if #errors > 0 then return false, table.concat(errors, "; ") end
         return true
     end
+
+    -- MacLib:Window() defines its native serializer again while constructing
+    -- the config UI. Preserve these fixed closures and restore them immediately
+    -- after the window is created.
+    MacLib.__HakoSaveConfig = MacLib.SaveConfig
+    MacLib.__HakoLoadConfig = MacLib.LoadConfig
 end
 
 -- ============================================================
@@ -2649,7 +2689,10 @@ local function cleanup(fromWindow)
     entityWatchConns = {}
     lootWatchConns = {}
     cache = {}
-    if getgenv then getgenv().__HAKO_CLEANUP = nil end
+    if getgenv then
+        getgenv().__HAKO_CLEANUP = nil
+        getgenv().__HAKO_CONFIG_API = nil
+    end
     if Window and not fromWindow then pcall(function() Window:Unload() end) end
 end
 
@@ -2672,6 +2715,8 @@ Window = MacLib:Window({
     Keybind = Enum.KeyCode.RightControl,
     AcrylicBlur = false,  -- blur needs Plugin capability some executors' inject thread lacks
 })
+MacLib.SaveConfig = MacLib.__HakoSaveConfig or MacLib.SaveConfig
+MacLib.LoadConfig = MacLib.__HakoLoadConfig or MacLib.LoadConfig
 Window.onUnloaded(function()
     pcall(cleanup, true)
 end)
@@ -2968,6 +3013,57 @@ cfgR:Label({ Text = "Визуалы не меняют workspace; гаранти�
 cfgR:Label({ Text = "Прицел двигает мышь. Без хуков и вызова RemoteEvent." })
 cfgR:Divider()
 cfgR:Button({ Name = "Выгрузить скрипт", Callback = function() cleanup() end })
+end
+
+if getgenv then
+    getgenv().__HAKO_CONFIG_API = {
+        Save = function(name) return MacLib:SaveConfig(name) end,
+        Load = function(name) return MacLib:LoadConfig(name) end,
+        List = function() return MacLib:RefreshConfigList() end,
+        Delete = function(name)
+            if not (delfile and isfile) then return false, "Delete API unavailable" end
+            local path = MacLib.Folder .. "/settings/" .. tostring(name) .. ".json"
+            if not isfile(path) then return true end
+            local ok, err = pcall(delfile, path)
+            return ok, ok and nil or tostring(err)
+        end,
+        Count = function()
+            local count = 0
+            for _ in pairs(MacLib.Options or {}) do count = count + 1 end
+            return count
+        end,
+        Get = function(flag)
+            local option = MacLib.Options and MacLib.Options[flag]
+            if not option then return nil end
+            if option.Class == "Toggle" then return option:GetState() end
+            if option.Class == "Slider" then return option:GetValue() end
+            if option.Class == "Input" then return option.GetInput and option:GetInput() or option.Text end
+            if option.Class == "Keybind" then
+                local bind = option:GetBind()
+                return bind and bind.Name or nil
+            end
+            return option.Value
+        end,
+        Set = function(flag, value)
+            local option = MacLib.Options and MacLib.Options[flag]
+            if not option then return false, "Unknown option" end
+            if option.Class == "Toggle" then
+                option:UpdateState(value == true)
+            elseif option.Class == "Slider" then
+                option:UpdateValue(tonumber(value))
+                if option.Settings and option.Settings.Callback then
+                    option.Settings.Callback(option:GetValue())
+                end
+            elseif option.Class == "Input" then
+                option:UpdateText(tostring(value or ""))
+            elseif option.Class == "Dropdown" then
+                option:UpdateSelection(value)
+            else
+                return false, "Unsupported option class"
+            end
+            return true
+        end,
+    }
 end
 
 Window:Notify({
