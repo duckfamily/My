@@ -1816,8 +1816,10 @@ local aimTargetVisible = true
 local aimLockedModel = nil
 local aimLockedAt = 0
 local aimMouseWarningShown = false
-local smartHeadBlockedAt = setmetatable({}, { __mode = "k" })
 local aimPointLocal = setmetatable({}, { __mode = "k" })
+local aimPointState = setmetatable({}, { __mode = "k" })
+local aimPointMode = setmetatable({}, { __mode = "k" })
+local aimPartState = setmetatable({}, { __mode = "k" })
 local gunProfileCache = setmetatable({}, { __mode = "k" })
 local gunRuntimeCache = setmetatable({}, { __mode = "k" })
 local muzzleObjectCache = setmetatable({}, { __mode = "k" })
@@ -1855,9 +1857,12 @@ aimRayParams.IgnoreWater = true
 pcall(function() aimRayParams.CollisionGroup = "Raycast" end)
 
 local AIM_STYLE = {
-    Legit = { smoothness = 7, deadzone = 2, maxStep = 18, recoil = 0.75, spreadDeadzone = 2.5, targetHold = 0.55, switchRatio = 1.08, switchBonus = 3 },
-    Rage = { smoothness = 3, deadzone = 0.8, maxStep = 40, recoil = 1.05, spreadDeadzone = 1.25, targetHold = 0.72, switchRatio = 1.18, switchBonus = 6 },
-    SuperRage = { smoothness = 1, deadzone = 0, maxStep = 80, recoil = 1.35, spreadDeadzone = 0.25, targetHold = 0.85, switchRatio = 1.3, switchBonus = 10 },
+    Legit = { smoothness = 7, deadzone = 2, maxStep = 18, recoil = 0.75, spreadDeadzone = 2.5, targetHold = 0.55, switchRatio = 1.08, switchBonus = 3,
+        pointConfirm = 0.075, acquireConfirm = 0.055, partConfirm = 0.075, headConfirm = 0.12, blockedGrace = 0.10 },
+    Rage = { smoothness = 3, deadzone = 0.8, maxStep = 40, recoil = 1.05, spreadDeadzone = 1.25, targetHold = 0.72, switchRatio = 1.18, switchBonus = 6,
+        pointConfirm = 0.035, acquireConfirm = 0.025, partConfirm = 0.04, headConfirm = 0.07, blockedGrace = 0.06 },
+    SuperRage = { smoothness = 1, deadzone = 0, maxStep = 80, recoil = 1.35, spreadDeadzone = 0.25, targetHold = 0.85, switchRatio = 1.3, switchBonus = 10,
+        pointConfirm = 0.018, acquireConfirm = 0.012, partConfirm = 0.025, headConfirm = 0.04, blockedGrace = 0.035 },
 }
 local function aimStyle()
     return AIM_STYLE[cfg.AimStyle] or AIM_STYLE.Legit
@@ -1930,8 +1935,15 @@ local function currentAimPoint(part)
 end
 
 local function visibleAimPoint(cam, part)
+    local pointMode = cfg.AimTargetPart == "Smart" and "Smart" or "Center"
+    if aimPointMode[part] ~= pointMode then
+        aimPointMode[part] = pointMode
+        aimPointLocal[part] = nil
+        aimPointState[part] = nil
+    end
     if not cfg.AimLosCheck then
         aimPointLocal[part] = Vector3.zero
+        aimPointState[part] = nil
         return part.Position
     end
 
@@ -1953,14 +1965,48 @@ local function visibleAimPoint(cam, part)
         end
     end
 
+    -- Keep the already selected point while it remains shootable. Re-picking
+    -- the first visible multipoint every render frame makes the camera bounce
+    -- between the centre/edges of a head around windows and thin cover.
+    local savedOffset = aimPointLocal[part]
+    if typeof(savedOffset) == "Vector3" then
+        local savedPoint = part.CFrame:PointToWorldSpace(savedOffset)
+        if hasAimLineOfSight(cam, part, savedPoint) then
+            aimPointState[part] = nil
+            return savedPoint
+        end
+    end
+
+    local replacement, replacementPoint
     for _, offset in ipairs(offsets) do
         local point = part.CFrame:PointToWorldSpace(offset)
         if hasAimLineOfSight(cam, part, point) then
-            aimPointLocal[part] = offset
-            return point
+            replacement, replacementPoint = offset, point
+            break
         end
     end
-    return nil
+    if not replacement then
+        aimPointState[part] = nil
+        return nil
+    end
+
+    -- The first point on a new part may be used immediately; changing an
+    -- existing point requires several consistent raycasts. Until then the aim
+    -- pauses instead of steering toward a one-frame opening.
+    if typeof(savedOffset) ~= "Vector3" then
+        aimPointLocal[part] = replacement
+        return replacementPoint
+    end
+    local state = aimPointState[part]
+    local now = os.clock()
+    if not state or state.offset ~= replacement then
+        aimPointState[part] = { offset = replacement, since = now }
+        return nil
+    end
+    if now - state.since < aimStyle().pointConfirm then return nil end
+    aimPointLocal[part] = replacement
+    aimPointState[part] = nil
+    return replacementPoint
 end
 
 local function canAimAtPart(cam, part)
@@ -1999,35 +2045,67 @@ end
 
 local function resolveAimPart(model, cam, center, radius)
     local parts = aimParts(model)
-    if cfg.AimTargetPart == "Smart" and parts[1] and parts[1].Name == "Head" then
-        local head = parts[1]
-        local headVisible = canAimAtPart(cam, head)
-        if headVisible and aimPartWithinRadius(cam, head, center, radius) then
-            smartHeadBlockedAt[model] = nil
-            return head
-        end
-        -- Grace is useful only when an already locked head disappears for one
-        -- noisy raycast frame. On first acquisition it merely creates a visible
-        -- delay before Smart falls back to an exposed torso.
-        local wasLockedOnHead = aimLockedModel == model and aimTarget
-            and aimTarget.Parent == model and aimTarget.Name == "Head"
-        if not headVisible and wasLockedOnHead then
-            smartHeadBlockedAt[model] = smartHeadBlockedAt[model] or os.clock()
-            if os.clock() - smartHeadBlockedAt[model] < 0.12 then return nil end
-        else
-            smartHeadBlockedAt[model] = nil
-        end
-        for i = 2, #parts do
-            if canAimAtPart(cam, parts[i]) and aimPartWithinRadius(cam, parts[i], center, radius) then
-                return parts[i]
-            end
+    local now = os.clock()
+    local state = aimPartState[model]
+    if not state then
+        state = {}
+        aimPartState[model] = state
+    end
+
+    local function usable(part)
+        return part and part.Parent == model and canAimAtPart(cam, part)
+            and aimPartWithinRadius(cam, part, center, radius)
+    end
+    local function firstUsable(startIndex)
+        for i = startIndex or 1, #parts do
+            if usable(parts[i]) then return parts[i] end
         end
         return nil
     end
-    for _, part in ipairs(parts) do
-        if canAimAtPart(cam, part) and aimPartWithinRadius(cam, part, center, radius) then return part end
+    local function confirm(candidate, delay)
+        if state.candidate ~= candidate then
+            state.candidate, state.candidateAt = candidate, now
+            return false
+        end
+        return now - (state.candidateAt or now) >= delay
     end
-    return nil
+
+    local current = state.part
+    if current and current.Parent == model and usable(current) then
+        state.blockedAt = nil
+        -- Smart prefers the head, but upgrades from torso only after the head
+        -- has stayed shootable long enough. This removes head/torso ping-pong at
+        -- a broken window or when an enemy repeatedly peeks over terrain.
+        local head = cfg.AimTargetPart == "Smart" and parts[1]
+        if head and head.Name == "Head" and current ~= head and usable(head) then
+            if confirm(head, aimStyle().headConfirm) then
+                state.part, state.candidate, state.candidateAt = head, nil, nil
+                return head
+            end
+        else
+            state.candidate, state.candidateAt = nil, nil
+        end
+        return current
+    end
+
+    if current then
+        state.blockedAt = state.blockedAt or now
+        if now - state.blockedAt < aimStyle().blockedGrace then return nil end
+    end
+
+    local candidate = firstUsable(1)
+    if not candidate then
+        state.candidate, state.candidateAt = nil, nil
+        return nil
+    end
+    -- Require a stable path both for initial acquisition and for changing body
+    -- parts. A single ray slipping through a window frame cannot grab the camera.
+    local tuning = aimStyle()
+    local delay = current and tuning.partConfirm or tuning.acquireConfirm
+    if not confirm(candidate, delay) then return nil end
+    state.part = candidate
+    state.blockedAt, state.candidate, state.candidateAt = nil, nil, nil
+    return candidate
 end
 
 local function aimScore(hum, screenDistance, worldDistance)
