@@ -1873,9 +1873,9 @@ aimServo.silent = {
     wasReadonly = false, lockedModel = nil, lockedPart = nil, lockedAt = 0,
     redirected = 0, lastTarget = "", lastError = "",
     styles = {
-        Legit = { angle = 2.25, chance = 0.82, ads = true, penetration = false, hold = 0.18 },
-        Rage = { angle = 12, chance = 1, ads = false, penetration = true, hold = 0.35 },
-        SuperRage = { angle = 45, chance = 1, ads = false, penetration = true, hold = 0.55 },
+        Legit = { chance = 0.82, ads = true, penetration = false, hold = 0.18 },
+        Rage = { chance = 1, ads = false, penetration = true, hold = 0.35 },
+        SuperRage = { chance = 1, ads = false, penetration = true, hold = 0.55 },
     },
 }
 local aimPointLocal = setmetatable({}, { __mode = "k" })
@@ -2662,8 +2662,9 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
     if style.ads and not gun.ads then return nil end
     if style.chance < 1 and math.random() > style.chance then return nil end
 
-    local shotDirection = originalDirection.Unit
     local maxDistance = math.min(cfg.AimMaxDist or 1500, gun.maxDistance or 2000)
+    local silentRadius = math.clamp(tonumber(cfg.SilentAimFovPx) or 250, 50, 600)
+    local screenCenter = cam.ViewportSize / 2
     local bestPart, bestPoint, bestScore = nil, nil, math.huge
     local now = os.clock()
 
@@ -2688,13 +2689,15 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
                 -- every sufficiently long shot.
                 local rawPoint = visibleAimPoint(cam, part)
                 if rawPoint and aimServo.silentPathClear(cam, origin, part, rawPoint, style.penetration) then
-                    local predicted = aimServo.ballisticPoint(part, cam)
-                    local desired = predicted - origin
-                    if desired.Magnitude > 0.001 then
-                        local angle = math.deg(math.acos(math.clamp(shotDirection:Dot(desired.Unit), -1, 1)))
-                        if angle <= style.angle then
+                    local screen, onScreen = cam:WorldToViewportPoint(rawPoint)
+                    local screenDistance = onScreen
+                        and (Vector2.new(screen.X, screen.Y) - screenCenter).Magnitude or math.huge
+                    if screenDistance <= silentRadius then
+                        local predicted = aimServo.ballisticPoint(part, cam)
+                        local desired = predicted - origin
+                        if desired.Magnitude > 0.001 then
                             local distance = desired.Magnitude
-                            local score = aimScore(humanoid, angle * 100, distance)
+                            local score = aimScore(humanoid, screenDistance, distance)
                             if model == aimServo.silent.lockedModel
                                 and now - aimServo.silent.lockedAt <= style.hold then
                                 -- Do not alternate between two overlapping bots
@@ -2742,6 +2745,19 @@ aimServo.installSilent = function()
     local state = aimServo.silent
     if state.installed then return true end
     local network = type(shared) == "table" and shared.Network
+    -- Some places load the same Network module into a script-local variable
+    -- without publishing it to `shared`. Requiring an already loaded module
+    -- returns its cached table, so patching this fallback also reaches those
+    -- local references without replacing `shared.Network`.
+    if type(network) ~= "table" or type(network.FireServer) ~= "function" then
+        local ok, module = pcall(function()
+            local storage = ReplicatedStorage:FindFirstChild("Storage")
+            local modules = storage and storage:FindFirstChild("Modules")
+            local source = modules and modules:FindFirstChild("Network")
+            return source and require(source)
+        end)
+        if ok and type(module) == "table" then network = module end
+    end
     local original = network and network.FireServer
     if type(network) ~= "table" or type(original) ~= "function" then
         state.lastError = "shared.Network.FireServer недоступен"
@@ -3482,6 +3498,8 @@ local menuUIS = game:GetService("UserInputService")
 local menuWasOpen = false
 local savedMouseIcon = menuUIS.MouseIconEnabled
 local savedMouseBehavior = menuUIS.MouseBehavior
+local menuRestoreUntil = 0
+local menuRestoreToken = 0
 
 Window = MacLib:Window({
     Title = "hako",
@@ -3500,14 +3518,29 @@ end)
 
 -- Free the mouse while the menu is open (first-person games lock it to center)
 do
+    local function applySavedMouse()
+        pcall(function()
+            menuUIS.MouseIconEnabled = savedMouseIcon
+            menuUIS.MouseBehavior = savedMouseBehavior
+        end)
+    end
+
     restoreMenuMouse = function()
-        if menuWasOpen then
-            pcall(function()
-                menuUIS.MouseIconEnabled = savedMouseIcon
-                menuUIS.MouseBehavior = savedMouseBehavior
+        menuWasOpen = false
+        menuRestoreUntil = os.clock() + 0.85
+        menuRestoreToken = menuRestoreToken + 1
+        local token = menuRestoreToken
+        applySavedMouse()
+        -- MacLib and the game's own menu handlers can write the cursor one or
+        -- two frames after GetState() changes. Re-apply the captured game state
+        -- briefly, then return ownership completely to the game.
+        for _, delay in ipairs({ 0.03, 0.10, 0.25, 0.50, 0.80 }) do
+            task.delay(delay, function()
+                if token == menuRestoreToken and not menuWasOpen then
+                    applySavedMouse()
+                end
             end)
         end
-        menuWasOpen = false
     end
 
     conns[#conns + 1] = RunService.Heartbeat:Connect(function()
@@ -3516,6 +3549,8 @@ do
         if open then
             if not menuWasOpen then
                 menuWasOpen = true
+                menuRestoreToken = menuRestoreToken + 1
+                menuRestoreUntil = 0
             end
             if not menuUIS.MouseIconEnabled then menuUIS.MouseIconEnabled = true end
             if menuUIS.MouseBehavior ~= Enum.MouseBehavior.Default then
@@ -3523,6 +3558,8 @@ do
             end
         elseif menuWasOpen then
             restoreMenuMouse()
+        elseif os.clock() < menuRestoreUntil then
+            applySavedMouse()
         else
             -- Keep the snapshot current while the game owns the mouse. This
             -- preserves lobby cursor state as well as raid LockCenter state.
@@ -3757,6 +3794,12 @@ aimLft:Toggle({ Name = "Включить Silent Aim", Default = guiDefault("Sile
             local ok, err = aimServo.installSilent()
             if not ok then
                 cfg.SilentAimEnabled = false
+                task.defer(function()
+                    local option = MacLib.Options and MacLib.Options.silentEnabled
+                    if option and option.GetState and option:GetState() then
+                        option:UpdateState(false)
+                    end
+                end)
                 if Window then pcall(function() Window:Notify({ Title = "Silent Aim", Description = tostring(err), Lifetime = 5 }) end) end
             end
         else
@@ -3768,7 +3811,11 @@ aimLft:Dropdown({ Name = "Режим Silent Aim", Options = { "Legit", "Rage", "
     Default = 1, Multi = false, Callback = function(v)
         cfg.SilentAimStyle = ({["Legit"]="Legit", ["Rage"]="Rage", ["Super Rage"]="SuperRage", ["SuperRage"]="SuperRage"})[v] or "Legit"
     end }, "silentStyle")
-aimLft:Label({ Text = "Legit: ADS и малый угол • Rage: 12° • Super Rage: 45°" })
+aimLft:Slider({ Name = "Радиус Silent Aim", Default = guiDefault("SilentAimFovPx", 250),
+    Minimum = 50, Maximum = 600, DisplayMethod = "Round", Precision = 0,
+    Callback = function(v) cfg.SilentAimFovPx = v end }, "silentFovPx")
+aimLft:Label({ Text = "Радиус считается в пикселях от центра экрана." })
+aimLft:Label({ Text = "Legit: только ADS • Rage / Super Rage: без ADS" })
 aimLft:Label({ Text = "Подменяет направление fire; гарантий от античита нет." })
 
 aimRgt:Header({ Name = "Выбор цели" })
@@ -3823,6 +3870,7 @@ if getgenv then
                 enabled = cfg.SilentAimEnabled == true,
                 installed = state.installed == true,
                 style = tostring(cfg.SilentAimStyle or "Legit"),
+                fovPx = tonumber(cfg.SilentAimFovPx) or 250,
                 redirected = state.redirected,
                 lastTarget = state.lastTarget,
                 lastError = state.lastError,
