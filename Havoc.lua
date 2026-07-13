@@ -8,10 +8,11 @@
 
     Safety:
       * Visuals live in gethui(), never under workspace / the enemy character.
-      * Regular Aim uses no hooks. Optional Silent Aim synchronizes the game's
-        Network.FireServer direction with its local FastCast path (high risk).
+      * Regular Aim uses no hooks. Optional Silent Aim temporarily redirects the
+        equipped weapon's client FireDir through a local aim attachment and uses
+        no metamethod/remote hooks.
       * Regular Aim nudges the OS mouse (mousemoverel) and never writes camera.
-        Silent Aim is separate and rewrites the direction of `fire` in both paths.
+        Silent Aim is separate and restores FireDir immediately when inactive.
       * Never touches WalkSpeed / JumpPower / position (server MovementAnticheat).
       * Chams use a Highlight in gethui() adorneed to the target; the character
         itself gets no new instances.
@@ -20,9 +21,12 @@
 -- ============================================================
 -- Re-exec cleanup guard
 -- ============================================================
-if getgenv and getgenv().__HAKO_CLEANUP then
-    pcall(getgenv().__HAKO_CLEANUP)
-    task.wait(0.3)
+if getgenv then
+    local previousRuntime = getgenv().__HAKO_RUNTIME
+    if type(previousRuntime) == "table" and type(previousRuntime.Cleanup) == "function" then
+        pcall(previousRuntime.Cleanup)
+        task.wait(0.3)
+    end
 end
 
 -- ============================================================
@@ -34,9 +38,32 @@ local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local Lighting = game:GetService("Lighting")
 local HttpService = game:GetService("HttpService")
 
+-- The script exposes exactly one executor-global reference. Everything needed
+-- for re-execution, MCP diagnostics and config control lives under this table;
+-- the actual feature state remains in local closures below.
+local runtime = {
+    Version = 1,
+    SessionId = HttpService:GenerateGUID(false),
+    StartedAt = os.clock(),
+    Stage = "loading",
+    Error = "",
+}
+if getgenv then getgenv().__HAKO_RUNTIME = runtime end
+
 local player = Players.LocalPlayer
 local Window  -- forward declaration (used by aim + cleanup)
 local restoreMenuMouse = function() end
+
+-- Executor chunks can receive their own `shared` table. The weapon scripts read
+-- Roblox's environment table instead, so Silent Aim must use that exact object.
+-- Fall back to the current environment for executors without `getrenv`.
+local gameShared = type(shared) == "table" and shared or {}
+pcall(function()
+    if type(getrenv) ~= "function" then return end
+    local environment = getrenv()
+    local candidate = type(environment) == "table" and rawget(environment, "shared")
+    if type(candidate) == "table" then gameShared = candidate end
+end)
 
 -- ============================================================
 -- Library
@@ -66,6 +93,8 @@ local okLib, MacLib = pcall(function()
     error(table.concat(errors, " | "))
 end)
 if not okLib or not MacLib then
+    runtime.Stage = "error"
+    runtime.Error = tostring(MacLib)
     warn("[HAKO] Failed to load MacLib: " .. tostring(MacLib))
     pcall(function()
         game:GetService("StarterGui"):SetCore("SendNotification", {
@@ -256,6 +285,13 @@ local function newInst(class, props, parent)
     return i
 end
 
+-- Roblox invalidates parts of the GUI render tree even when a property is
+-- assigned its current value. All hot render paths use this helper so static
+-- labels/highlights do not generate needless work every frame.
+local function setProp(object, property, value)
+    if object[property] ~= value then object[property] = value end
+end
+
 local espGui = newInst("ScreenGui", {
     Name = string.format("_%x", math.random(0x100000, 0xFFFFFF)),
     ResetOnSpawn = false,
@@ -352,11 +388,14 @@ end
 -- ============================================================
 local cache = {}
 local conns = {}
+local renderState = { cacheSize = 0, visibilityTokens = 0 }
 
 -- BillboardGui-based ESP (Highlight outline + floating labels + gradient HP bar)
 local function createEntry(model, isNpc)
     if cache[model] then return end
-    local d = { isNpc = isNpc, visible = true, penetrable = false, visAccum = 0 }
+    -- Random phase prevents every freshly scanned entity from becoming due for
+    -- its expensive multipoint visibility test on the same rendered frame.
+    local d = { isNpc = isNpc, visible = true, penetrable = false, visAccum = math.random() * 0.1 }
 
     -- Highlight: glowing outline (primary) + optional through-wall fill
     d.hl = newInst("Highlight", {
@@ -440,6 +479,7 @@ local function createEntry(model, isNpc)
     }, espGui)
 
     cache[model] = d
+    renderState.cacheSize = renderState.cacheSize + 1
 end
 
 local function destroyEntry(model)
@@ -450,13 +490,20 @@ local function destroyEntry(model)
     pcall(function() d.hpBB:Destroy() end)
     pcall(function() d.tr:Destroy() end)
     cache[model] = nil
+    renderState.cacheSize = math.max(renderState.cacheSize - 1, 0)
 end
 
 local function hideEntry(d)
-    d.hl.Enabled = false
-    d.infoBB.Enabled = false
-    d.hpBB.Enabled = false
-    d.tr.Visible = false
+    setProp(d.hl, "Enabled", false)
+    setProp(d.infoBB, "Enabled", false)
+    setProp(d.hpBB, "Enabled", false)
+    setProp(d.tr, "Visible", false)
+end
+
+local function claimVisibilityToken()
+    if renderState.visibilityTokens < 1 then return false end
+    renderState.visibilityTokens = renderState.visibilityTokens - 1
+    return true
 end
 
 -- ============================================================
@@ -744,7 +791,7 @@ local function drawEntity(model, d, myRoot, cam, vpSize, dt)
     if d.isNpc then
         if cfg.NpcVisibleCheck then
             d.visAccum = (d.visAccum or 0) + (dt or 0)
-            if d.visAccum >= 0.1 then
+            if d.visAccum >= 0.1 and claimVisibilityToken() then
                 d.visAccum = 0
                 d.visible = computeVisible(model, cam)
             end
@@ -753,7 +800,7 @@ local function drawEntity(model, d, myRoot, cam, vpSize, dt)
     else
         -- Wall check (always on for players): custom visible / behind-wall colors
         d.visAccum = (d.visAccum or 0) + (dt or 0)
-        if d.visAccum >= 0.08 then
+        if d.visAccum >= 0.08 and claimVisibilityToken() then
             d.visAccum = 0
             d.visible = computeVisible(model, cam)
             d.penetrable = not d.visible and computePenetrable(model, cam) or false
@@ -766,29 +813,29 @@ local function drawEntity(model, d, myRoot, cam, vpSize, dt)
     local useOutline = cfg.VisualMode == "Outline" or cfg.VisualMode == "Both"
     local useFill = cfg.VisualMode == "Fill" or cfg.VisualMode == "Both"
     if (useOutline or useFill) and d.highlightAllowed ~= false then
-        d.hl.OutlineColor = col
-        d.hl.OutlineTransparency = useOutline and 0 or 1
-        d.hl.FillColor = col
-        d.hl.FillTransparency = useFill and (1 - cfg.ChamsOpacity / 100) or 1
-        d.hl.Enabled = true
+        setProp(d.hl, "OutlineColor", col)
+        setProp(d.hl, "OutlineTransparency", useOutline and 0 or 1)
+        setProp(d.hl, "FillColor", col)
+        setProp(d.hl, "FillTransparency", useFill and (1 - cfg.ChamsOpacity / 100) or 1)
+        setProp(d.hl, "Enabled", true)
     else
-        d.hl.Enabled = false
+        setProp(d.hl, "Enabled", false)
     end
 
     local fade = 0
     if cfg.DistanceFade and maxDistance > 0 then
         fade = math.clamp((dist / maxDistance - 0.65) / 0.35, 0, 0.75)
     end
-    d.nameLabel.TextTransparency = fade
-    d.detailLabel.TextTransparency = fade
-    d.weapLabel.TextTransparency = fade
-    d.gearLabel.TextTransparency = fade
-    d.hpFill.BackgroundTransparency = fade
+    setProp(d.nameLabel, "TextTransparency", fade)
+    setProp(d.detailLabel, "TextTransparency", fade)
+    setProp(d.weapLabel, "TextTransparency", fade)
+    setProp(d.gearLabel, "TextTransparency", fade)
+    setProp(d.hpFill, "BackgroundTransparency", fade)
 
     -- Info billboard
     if showNames or showDistance or showHealth or showWeapon then
-        d.infoBB.Adornee = head
-        d.infoBB.Enabled = true
+        setProp(d.infoBB, "Adornee", head)
+        setProp(d.infoBB, "Enabled", true)
 
         if showNames then
             local label
@@ -798,21 +845,21 @@ local function drawEntity(model, d, myRoot, cam, vpSize, dt)
                 local plr = Players:GetPlayerFromCharacter(model)
                 label = plr and plr.DisplayName or model.Name
             end
-            d.nameLabel.Text = label
-            d.nameLabel.TextColor3 = col
-            d.nameLabel.Visible = true
+            setProp(d.nameLabel, "Text", label)
+            setProp(d.nameLabel, "TextColor3", col)
+            setProp(d.nameLabel, "Visible", true)
         else
-            d.nameLabel.Visible = false
+            setProp(d.nameLabel, "Visible", false)
         end
 
         if showDistance or showHealth then
             local parts = {}
             if showDistance then parts[#parts + 1] = string.format("%.0fм", dist) end
             if showHealth then parts[#parts + 1] = string.format("%d ОЗ", math.floor(hum.Health)) end
-            d.detailLabel.Text = table.concat(parts, "  ")
-            d.detailLabel.Visible = true
+            setProp(d.detailLabel, "Text", table.concat(parts, "  "))
+            setProp(d.detailLabel, "Visible", true)
         else
-            d.detailLabel.Visible = false
+            setProp(d.detailLabel, "Visible", false)
         end
 
         if showWeapon then
@@ -841,17 +888,17 @@ local function drawEntity(model, d, myRoot, cam, vpSize, dt)
                         if capacity then d.weaponText = d.weaponText .. "/" .. tostring(math.floor(capacity)) end
                     end
                 end
-                d.weapLabel.Text = "[" .. (d.weaponText or tool.Name) .. "]"
-                d.weapLabel.Visible = true
+                setProp(d.weapLabel, "Text", "[" .. (d.weaponText or tool.Name) .. "]")
+                setProp(d.weapLabel, "Visible", true)
             else
                 local holsters = model:FindFirstChild("Holsters")
                 local models = holsters and holsters:FindFirstChild("Models")
                 local held = models and models:FindFirstChildWhichIsA("Model")
                 if held then
-                    d.weapLabel.Text = "[убрано: " .. held.Name .. "]"
-                    d.weapLabel.Visible = true
+                    setProp(d.weapLabel, "Text", "[убрано: " .. held.Name .. "]")
+                    setProp(d.weapLabel, "Visible", true)
                 else
-                    d.weapLabel.Visible = false
+                    setProp(d.weapLabel, "Visible", false)
                 end
             end
             d.equipAccum = (d.equipAccum or 999) + (dt or 0)
@@ -859,29 +906,29 @@ local function drawEntity(model, d, myRoot, cam, vpSize, dt)
                 d.equipAccum = 0
                 d.gearText = equipmentText(model)
             end
-            d.gearLabel.Text = d.gearText or ""
-            d.gearLabel.Visible = d.gearLabel.Text ~= ""
+            setProp(d.gearLabel, "Text", d.gearText or "")
+            setProp(d.gearLabel, "Visible", d.gearLabel.Text ~= "")
         else
-            d.weapLabel.Visible = false
-            d.gearLabel.Visible = false
+            setProp(d.weapLabel, "Visible", false)
+            setProp(d.gearLabel, "Visible", false)
         end
     else
-        d.infoBB.Enabled = false
+        setProp(d.infoBB, "Enabled", false)
     end
 
     -- Health bar billboard (size matched to character height)
     if showHealth then
-        d.hpBB.Adornee = head
-        d.hpBB.Enabled = true
+        setProp(d.hpBB, "Adornee", head)
+        setProp(d.hpBB, "Enabled", true)
         local sB = cam:WorldToViewportPoint(head.Position)
         local sT = cam:WorldToViewportPoint(head.Position + Vector3.new(0, 5, 0))
         local px = math.max(math.abs(sT.Y - sB.Y), 6)
-        d.hpBB.Size = UDim2.fromOffset(5, px)
-        d.hpBB.StudsOffset = Vector3.new(-1.8, -2.5, 0)
-        d.hpFill.Size = UDim2.new(1, 0, frac, 0)
-        d.hpFill.BackgroundColor3 = hpColor(frac)
+        setProp(d.hpBB, "Size", UDim2.fromOffset(5, px))
+        setProp(d.hpBB, "StudsOffset", Vector3.new(-1.8, -2.5, 0))
+        setProp(d.hpFill, "Size", UDim2.new(1, 0, frac, 0))
+        setProp(d.hpFill, "BackgroundColor3", hpColor(frac))
     else
-        d.hpBB.Enabled = false
+        setProp(d.hpBB, "Enabled", false)
     end
 
     -- Tracer (2D, players only) — always on-screen here (off-screen returned early)
@@ -890,13 +937,13 @@ local function drawEntity(model, d, myRoot, cam, vpSize, dt)
         local tx, ty = hrpS.X, hrpS.Y
         local dx, dy = tx - fx, ty - fy
         local len = math.sqrt(dx * dx + dy * dy)
-        d.tr.Position = UDim2.fromOffset((fx + tx) / 2, (fy + ty) / 2)
-        d.tr.Size = UDim2.fromOffset(len, 2)
-        d.tr.Rotation = math.deg(math.atan2(dy, dx))
-        d.tr.BackgroundColor3 = col
-        d.tr.Visible = true
+        setProp(d.tr, "Position", UDim2.fromOffset((fx + tx) / 2, (fy + ty) / 2))
+        setProp(d.tr, "Size", UDim2.fromOffset(len, 2))
+        setProp(d.tr, "Rotation", math.deg(math.atan2(dy, dx)))
+        setProp(d.tr, "BackgroundColor3", col)
+        setProp(d.tr, "Visible", true)
     else
-        d.tr.Visible = false
+        setProp(d.tr, "Visible", false)
     end
 
     return true
@@ -1037,38 +1084,39 @@ local function drawExfils(myRoot, cam)
             local nearest = name == nearestName
             local color = locked and Color3.fromRGB(255, 80, 65) or (nearest and Color3.fromRGB(255, 225, 70) or COLORS.Exfil)
             if not onScreen then return false end
-            d.text.Text = locked and "ЗАКРЫТЫЙ ВЫХОД" or (nearest and "БЛИЖАЙШИЙ ВЫХОД" or "ВЫХОД")
-            d.text.TextColor3 = color
-            d.text.Position = UDim2.fromOffset(sPos.X, sPos.Y - 8)
-            d.text.Visible = true
+            setProp(d.text, "Text", locked and "ЗАКРЫТЫЙ ВЫХОД" or (nearest and "БЛИЖАЙШИЙ ВЫХОД" or "ВЫХОД"))
+            setProp(d.text, "TextColor3", color)
+            setProp(d.text, "Position", UDim2.fromOffset(sPos.X, sPos.Y - 8))
+            setProp(d.text, "Visible", true)
             local suffix = ""
             if state and type(state.timer) == "number" then
                 local mins = math.floor(math.max(state.timer, 0) / 60)
                 local secs = math.floor(math.max(state.timer, 0) % 60)
                 suffix = suffix .. string.format("  | %02d:%02d", mins, secs)
             end
-            d.sub.Text = string.format("%.0fм%s", dist, suffix)
-            d.sub.Position = UDim2.fromOffset(sPos.X, sPos.Y + 9)
-            d.sub.Visible = true
+            setProp(d.sub, "Text", string.format("%.0fм%s", dist, suffix))
+            setProp(d.sub, "Position", UDim2.fromOffset(sPos.X, sPos.Y + 9))
+            setProp(d.sub, "Visible", true)
             return true
         end)
         if not ok2 or not vis2 then
-            d.text.Visible = false
-            d.sub.Visible = false
+            setProp(d.text, "Visible", false)
+            setProp(d.sub, "Visible", false)
         end
     end
 end
 
 local function hideExfils()
     for _, d in pairs(exfilCache) do
-        d.text.Visible = false
-        d.sub.Visible = false
+        setProp(d.text, "Visible", false)
+        setProp(d.sub, "Visible", false)
     end
 end
 
 local raidCounter = 0
 local raidWarned = {}
 local lastRaidValue = nil
+local lastRaidMaxTime = nil
 local function formatRaidTime(value)
     local hours = math.floor(value / 3600)
     local mins = math.floor((value % 3600) / 60)
@@ -1106,6 +1154,7 @@ local function updateRaidTimer(dt)
     end
     if lastRaidValue and val > lastRaidValue + 30 then raidWarned = {} end
     lastRaidValue = val
+    lastRaidMaxTime = maxTime
     local extras = {}
     if ended then extras[#extras + 1] = "ЗАВЕРШЁН" end
     if cfg.ServerInfo and doubleXp then extras[#extras + 1] = "2XP" end
@@ -1114,8 +1163,8 @@ local function updateRaidTimer(dt)
     if type(maxTime) == "number" and maxTime > 0 then
         raidLabel.TextColor3 = Color3.fromRGB(255, 55, 55):Lerp(COLORS.Timer, math.clamp(val / maxTime, 0, 1))
     end
-    raidPill.Visible = true
-    if cfg.RaidWarnings then
+    raidPill.Visible = cfg.RaidTimer == true
+    if cfg.RaidTimer and cfg.RaidWarnings then
         for _, threshold in ipairs({600, 300, 60}) do
             if val <= threshold and not raidWarned[threshold] then
                 raidWarned[threshold] = true
@@ -1507,7 +1556,7 @@ local function rebuildLoot()
                     local tier = rarityOf(cc.Name)
                     local ok, piv = pcall(function() return cc:GetPivot().Position end)
                     if ok and piv then
-                        new[#new + 1] = { inst = cc, pos = piv, top = piv + Vector3.new(0, 2, 0), label = cc.Name, cat = "container", tier = tier, color = COLORS.Loot[tier], price = 0, pricePerKg = 0 }
+                        new[#new + 1] = { inst = cc, pos = piv, top = piv + Vector3.new(0, 2, 0), label = cc.Name, cat = "container", staticPosition = true, tier = tier, color = COLORS.Loot[tier], price = 0, pricePerKg = 0 }
                     end
                 end
             end
@@ -1554,9 +1603,9 @@ local function lootCatEnabled(e)
 end
 
 local function hideLoot()
-    for i = 1, LOOT_POOL do lootPool[i].Visible = false end
-    for i = 1, LOOT_HL do lootHlPool[i].Enabled = false end
-    for _, label in ipairs(lootListLabels) do label.Visible = false end
+    for i = 1, LOOT_POOL do setProp(lootPool[i], "Visible", false) end
+    for i = 1, LOOT_HL do setProp(lootHlPool[i], "Enabled", false) end
+    for _, label in ipairs(lootListLabels) do setProp(label, "Visible", false) end
 end
 
 -- The nearest-N selection + sort (the expensive part) is throttled; the chosen
@@ -1569,26 +1618,31 @@ local function selectLoot(myPos)
     local shown = {}
     for _, e in ipairs(lootEntries) do
         if lootCatEnabled(e) then
-            local ok, piv = pcall(function() return e.inst:GetPivot().Position end)
-            if ok and piv then e.pos = piv; e.top = piv + Vector3.new(0, 2, 0) end
+            -- Crates and fixed containers never move during a raid. Their pivot
+            -- was captured by rebuildLoot; only bodies/loose items are refreshed.
+            if not e.staticPosition then
+                local ok, piv = pcall(function() return e.inst:GetPivot().Position end)
+                if ok and piv then e.pos = piv; e.top = piv + Vector3.new(0, 2, 0) end
+            end
             local dd = (e.pos - myPos).Magnitude
             if dd <= maxd then
-                shown[#shown + 1] = { e = e, d = dd }
+                e.selectionDistance = dd
+                shown[#shown + 1] = e
             end
         end
     end
     table.sort(shown, function(a, b)
         if cfg.LootSort == "Price" then
-            if (a.e.price or 0) == (b.e.price or 0) then return a.d < b.d end
-            return (a.e.price or 0) > (b.e.price or 0)
+            if (a.price or 0) == (b.price or 0) then return a.selectionDistance < b.selectionDistance end
+            return (a.price or 0) > (b.price or 0)
         elseif cfg.LootSort == "Price/kg" then
-            if (a.e.pricePerKg or 0) == (b.e.pricePerKg or 0) then return a.d < b.d end
-            return (a.e.pricePerKg or 0) > (b.e.pricePerKg or 0)
+            if (a.pricePerKg or 0) == (b.pricePerKg or 0) then return a.selectionDistance < b.selectionDistance end
+            return (a.pricePerKg or 0) > (b.pricePerKg or 0)
         end
-        return a.d < b.d
+        return a.selectionDistance < b.selectionDistance
     end)
     local sel = {}
-    for i = 1, math.min(#shown, LOOT_POOL) do sel[i] = shown[i].e end
+    for i = 1, math.min(#shown, LOOT_POOL) do sel[i] = shown[i] end
     lootSelected = sel
 end
 
@@ -1611,12 +1665,12 @@ local function drawLoot(myRoot, cam, dt)
         if lootHlPool[i] then
             if alive then
                 local hl = lootHlPool[i]
-                hl.Adornee = e.inst
-                hl.FillColor = e.color
-                hl.OutlineColor = e.color
-                hl.Enabled = true
+                setProp(hl, "Adornee", e.inst)
+                setProp(hl, "FillColor", e.color)
+                setProp(hl, "OutlineColor", e.color)
+                setProp(hl, "Enabled", true)
             else
-                lootHlPool[i].Enabled = false
+                setProp(lootHlPool[i], "Enabled", false)
             end
         end
 
@@ -1631,15 +1685,15 @@ local function drawLoot(myRoot, cam, dt)
                 local advice, adviceColor = cfg.LootShowAdvice and lootAdvice(e) or nil
                 if advice then parts[#parts + 1] = advice end
                 parts[#parts + 1] = string.format("<font transparency='0.4'>%.0fм</font>", (e.pos - myPos).Magnitude)
-                txt.Text = table.concat(parts, " • ")
-                txt.Position = UDim2.fromOffset(sc.X, sc.Y)
-                txt.TextColor3 = adviceColor or e.color
-                txt.Visible = true
+                setProp(txt, "Text", table.concat(parts, " • "))
+                setProp(txt, "Position", UDim2.fromOffset(sc.X, sc.Y))
+                setProp(txt, "TextColor3", adviceColor or e.color)
+                setProp(txt, "Visible", true)
             else
-                txt.Visible = false
+                setProp(txt, "Visible", false)
             end
         else
-            txt.Visible = false
+            setProp(txt, "Visible", false)
         end
     end
 
@@ -1651,11 +1705,11 @@ local function drawLoot(myRoot, cam, dt)
             local advice, adviceColor = cfg.LootShowAdvice and lootAdvice(e) or nil
             if advice then parts[#parts + 1] = advice end
             parts[#parts + 1] = string.format("%.0fм", (e.pos - myPos).Magnitude)
-            label.Text = table.concat(parts, " • ")
-            label.TextColor3 = adviceColor or e.color
-            label.Visible = true
+            setProp(label, "Text", table.concat(parts, " • "))
+            setProp(label, "TextColor3", adviceColor or e.color)
+            setProp(label, "Visible", true)
         else
-            label.Visible = false
+            setProp(label, "Visible", false)
         end
     end
 end
@@ -1666,7 +1720,11 @@ end
 local DOOR_POOL = 18
 local doorLabels = {}
 for i = 1, DOOR_POOL do doorLabels[i] = mkText(espGui, 9, true) end
-local doorEntries = {}
+local doorState = {
+    entries = {}, selected = {},
+    positions = setmetatable({}, { __mode = "k" }),
+    byModel = setmetatable({}, { __mode = "k" }),
+}
 
 local function configValue(parent, name, fallback)
     local object = parent and parent:FindFirstChild(name)
@@ -1685,50 +1743,65 @@ local function refreshDoors()
             if model:IsA("Model") and data then
                 local required = data:FindFirstChild("isKeyRequired")
                 local health = data:FindFirstChild("health")
-                local ok, pos = pcall(function() return model:GetPivot().Position end)
+                local entry = doorState.byModel[model]
+                local pos = entry and entry.pos or doorState.positions[model]
+                local ok = pos ~= nil
+                if not pos then
+                    ok, pos = pcall(function() return model:GetPivot().Position end)
+                    if ok and pos then doorState.positions[model] = pos end
+                end
                 if ok and pos then
-                    result[#result + 1] = {
-                        model = model, data = data, pos = pos,
-                        open = configValue(data, "isOpen", false) == true,
-                        locked = configValue(data, "isLocked", false) == true,
-                        broken = configValue(data, "isBroken", false) == true,
-                        knobBroken = configValue(data, "knobBroken", false) == true,
-                        keyRequired = required and required:IsA("BoolValue") and required.Value == true or false,
-                        keyItemId = required and required:GetAttribute("keyItemId"),
-                        keycard = required and required:GetAttribute("isKeycard") == true or false,
-                        health = tonumber(configValue(health, "current", nil)),
-                        maxHealth = tonumber(configValue(health, "max", nil)),
-                    }
+                    if not entry then
+                        entry = { model = model, data = data, pos = pos }
+                        doorState.byModel[model] = entry
+                    end
+                    entry.data, entry.pos = data, pos
+                    entry.open = configValue(data, "isOpen", false) == true
+                    entry.locked = configValue(data, "isLocked", false) == true
+                    entry.broken = configValue(data, "isBroken", false) == true
+                    entry.knobBroken = configValue(data, "knobBroken", false) == true
+                    entry.keyRequired = required and required:IsA("BoolValue") and required.Value == true or false
+                    entry.keyItemId = required and required:GetAttribute("keyItemId")
+                    entry.keycard = required and required:GetAttribute("isKeycard") == true or false
+                    entry.health = tonumber(configValue(health, "current", nil))
+                    entry.maxHealth = tonumber(configValue(health, "max", nil))
+                    result[#result + 1] = entry
                 end
             end
         end
     end
-    doorEntries = result
+    doorState.entries = result
 end
 
 local function hideDoors()
-    for _, label in ipairs(doorLabels) do label.Visible = false end
+    for _, label in ipairs(doorLabels) do setProp(label, "Visible", false) end
 end
 
-local function drawDoors(myRoot, cam)
-    if not myRoot then hideDoors() return end
+local function selectDoors(myRoot)
+    if not myRoot then doorState.selected = {} return end
     local nearby = {}
-    for _, door in ipairs(doorEntries) do
+    for _, door in ipairs(doorState.entries) do
         if door.model and door.model.Parent then
-            local ok, pos = pcall(function() return door.model:GetPivot().Position end)
-            if ok then door.pos = pos end
             local distance = (door.pos - myRoot.Position).Magnitude
             local interesting = door.locked or door.keyRequired or door.broken or door.knobBroken
             if distance <= cfg.DoorMaxDist and (not cfg.DoorOnlyInteresting or interesting) then
-                nearby[#nearby + 1] = { door = door, distance = distance }
+                door.distance = distance
+                nearby[#nearby + 1] = door
             end
         end
     end
     table.sort(nearby, function(a, b) return a.distance < b.distance end)
+    local selected = {}
+    for i = 1, math.min(#nearby, DOOR_POOL) do selected[i] = nearby[i] end
+    doorState.selected = selected
+end
+
+local function drawDoors(myRoot, cam)
+    if not myRoot then hideDoors() return end
     for i, label in ipairs(doorLabels) do
-        local row = nearby[i]
+        local row = doorState.selected[i]
         if row then
-            local door = row.door
+            local door = row
             local screen, onScreen = cam:WorldToViewportPoint(door.pos + Vector3.new(0, 2.5, 0))
             if onScreen then
                 local keyOwned = door.keyItemId ~= nil and inventorySummary.ownedIds[tostring(door.keyItemId)] ~= nil
@@ -1741,17 +1814,144 @@ local function drawDoors(myRoot, cam)
                     else state, color = door.keycard and "НУЖНА КАРТА" or "НУЖЕН КЛЮЧ", Color3.fromRGB(255, 185, 70) end
                 elseif door.locked then state, color = "ЗАПЕРТА", Color3.fromRGB(255, 90, 75) end
                 local hp = door.health and door.maxHealth and string.format(" | прочность %d/%d", door.health, door.maxHealth) or ""
-                label.Text = string.format("ДВЕРЬ: %s%s | %.0fм", state, hp, row.distance)
-                label.TextColor3 = color
-                label.Position = UDim2.fromOffset(screen.X, screen.Y)
-                label.Visible = true
+                setProp(label, "Text", string.format("ДВЕРЬ: %s%s | %.0fм", state, hp, door.distance))
+                setProp(label, "TextColor3", color)
+                setProp(label, "Position", UDim2.fromOffset(screen.X, screen.Y))
+                setProp(label, "Visible", true)
             else
-                label.Visible = false
+                setProp(label, "Visible", false)
             end
         else
-            label.Visible = false
+            setProp(label, "Visible", false)
         end
     end
+end
+
+-- ============================================================
+-- Smart raid advisor
+-- ============================================================
+-- A low-frequency decision layer over existing caches. It never rescans the
+-- world: inventory, quest, loot, door and extraction data are reused here.
+local raidAdvisor = { accum = 999 }
+raidAdvisor.frame = newInst("Frame", {
+    AnchorPoint = Vector2.new(0, 1),
+    Position = UDim2.new(0, 18, 1, -84),
+    Size = UDim2.fromOffset(500, 76),
+    BackgroundColor3 = Color3.fromRGB(12, 14, 18),
+    BackgroundTransparency = 0.18,
+    BorderSizePixel = 0,
+    Visible = false,
+}, espGui)
+mkCorner(raidAdvisor.frame, 8)
+raidAdvisor.stroke = mkStroke(raidAdvisor.frame, Color3.fromRGB(90, 210, 255), 1.2, 0.3)
+raidAdvisor.title = newInst("TextLabel", {
+    BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 7), Size = UDim2.new(1, -24, 0, 20),
+    Font = Enum.Font.GothamBold, TextSize = 13, TextXAlignment = Enum.TextXAlignment.Left,
+    TextColor3 = Color3.fromRGB(100, 235, 170), TextStrokeTransparency = 0.35, Text = "",
+}, raidAdvisor.frame)
+raidAdvisor.stats = newInst("TextLabel", {
+    BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 29), Size = UDim2.new(1, -24, 0, 17),
+    Font = Enum.Font.GothamMedium, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
+    TextColor3 = Color3.fromRGB(205, 215, 225), TextStrokeTransparency = 0.45, Text = "",
+}, raidAdvisor.frame)
+raidAdvisor.action = newInst("TextLabel", {
+    BackgroundTransparency = 1, Position = UDim2.fromOffset(12, 49), Size = UDim2.new(1, -24, 0, 18),
+    Font = Enum.Font.GothamBold, TextSize = 10, TextXAlignment = Enum.TextXAlignment.Left,
+    TextColor3 = Color3.fromRGB(255, 220, 105), TextStrokeTransparency = 0.35,
+    TextTruncate = Enum.TextTruncate.AtEnd, Text = "",
+}, raidAdvisor.frame)
+
+raidAdvisor.hide = function()
+    setProp(raidAdvisor.frame, "Visible", false)
+end
+
+raidAdvisor.nearestExfil = function(myRoot)
+    if not myRoot then return nil, nil end
+    local available, hasAvailability = availableExfils()
+    local nearestName, nearestDistance
+    for name, entry in pairs(exfilCache) do
+        local state = available[name]
+        local allowed = (not hasAvailability or state ~= nil) and not (state and state.locked)
+        local position = entry.part and entry.part.Parent and entry.part.Position
+            or (state and state.position) or entry.position
+        if allowed and typeof(position) == "Vector3" then
+            local distance = (position - myRoot.Position).Magnitude
+            if not nearestDistance or distance < nearestDistance then
+                nearestName, nearestDistance = name, distance
+            end
+        end
+    end
+    return nearestName, nearestDistance
+end
+
+raidAdvisor.update = function(myRoot)
+    if not cfg.SmartRaidHelper or not myRoot or (cfg.ContextAuto and not raidContext) then
+        raidAdvisor.hide()
+        return
+    end
+
+    local valueGoal = math.max(tonumber(cfg.RaidAdvisorValue) or 12000, 1)
+    local criticalTime = math.max(tonumber(cfg.RaidAdvisorTime) or 300, 30)
+    local value = inventorySummary.totalValue or 0
+    local weight = inventorySummary.totalWeight or 0
+    local securedQuest, securedName = 0, nil
+    for name in pairs(activeQuestItems) do
+        if (inventorySummary.ownedNames[name] or 0) > 0 then
+            securedQuest = securedQuest + 1
+            securedName = securedName or (itemByLowerName[name] or name)
+        end
+    end
+
+    local decision, reason, color = "ПРОДОЛЖАЙ ЛУТ", "Запас по времени и ценности", Color3.fromRGB(95, 235, 160)
+    if lastRaidValue and lastRaidValue <= 60 then
+        decision, reason, color = "НЕМЕДЛЕННО НА ВЫХОД", "До конца рейда меньше минуты", Color3.fromRGB(255, 70, 65)
+    elseif lastRaidValue and lastRaidValue <= criticalTime then
+        decision, reason, color = "ПОРА НА ВЫХОД", "Достигнуто критическое время", Color3.fromRGB(255, 155, 65)
+    elseif securedQuest > 0 then
+        decision, reason, color = "СОХРАНИ КВЕСТОВЫЙ ПРЕДМЕТ", securedName or "Квестовый предмет при себе", Color3.fromRGB(255, 215, 70)
+    elseif value >= valueGoal then
+        decision, reason, color = "ВЫГОДНО ВЫХОДИТЬ", "Порог стоимости достигнут", Color3.fromRGB(90, 225, 255)
+    elseif weight >= 35 then
+        decision, reason, color = "РАЗГРУЗИСЬ ИЛИ ВЫХОДИ", "Большой вес замедляет дальнейший сбор", Color3.fromRGB(255, 175, 75)
+    elseif lastRaidValue and lastRaidMaxTime and lastRaidMaxTime > 0 and lastRaidValue / lastRaidMaxTime <= 0.45 then
+        decision, reason, color = "ГОТОВЬ МАРШРУТ К ВЫХОДУ", "Прошла большая часть рейда", Color3.fromRGB(120, 205, 255)
+    end
+
+    local exfilName, exfilDistance = raidAdvisor.nearestExfil(myRoot)
+    local timeText = lastRaidValue and formatRaidTime(lastRaidValue) or "--:--"
+    local questText = securedQuest > 0 and (" • квестовых при себе: " .. securedQuest) or ""
+    local stats = string.format("$%d / $%d  •  %.1f кг  •  %d предметов%s  •  %s",
+        math.floor(value), math.floor(valueGoal), weight, inventorySummary.count or 0, questText, timeText)
+
+    local bestUpgrade, bestGain
+    if inventorySummary.lowest then
+        local meaningfulGain = math.max(100, inventorySummary.lowest.valuePerSlot * 0.15)
+        for _, entry in ipairs(lootSelected) do
+            local gain = entry.cat == "item" and (entry.valuePerSlot or 0) - inventorySummary.lowest.valuePerSlot or 0
+            if gain >= meaningfulGain and (not bestGain or gain > bestGain) then bestUpgrade, bestGain = entry, gain end
+        end
+    end
+    local hints = {}
+    if exfilName and exfilDistance then hints[#hints + 1] = string.format("выход %s — %.0fм", exfilName, exfilDistance) end
+    if decision == "ПРОДОЛЖАЙ ЛУТ" and bestUpgrade and bestGain > 0 then
+        hints[#hints + 1] = string.format("замени %s на %s: +$%d/слот",
+            inventorySummary.lowest.name, bestUpgrade.label, math.floor(bestGain))
+    end
+    for _, door in ipairs(doorState.selected) do
+        if door.keyRequired then
+            local owned = door.keyItemId ~= nil and inventorySummary.ownedIds[tostring(door.keyItemId)] ~= nil
+            hints[#hints + 1] = owned and "у ближайшей двери нужный ключ есть" or "ближайшая важная дверь требует ключ"
+            break
+        end
+    end
+    if #hints == 0 then hints[1] = reason else hints[#hints + 1] = reason end
+
+    setProp(raidAdvisor.title, "Text", "УМНЫЙ РЕЙД  •  " .. decision)
+    setProp(raidAdvisor.title, "TextColor3", color)
+    setProp(raidAdvisor.stroke, "Color", color)
+    setProp(raidAdvisor.stats, "Text", stats)
+    setProp(raidAdvisor.action, "Text", "ДЕЙСТВИЕ: " .. table.concat(hints, "  •  "))
+    setProp(raidAdvisor.frame, "Visible", true)
 end
 
 -- ============================================================
@@ -1784,6 +1984,84 @@ local function restoreFullbright()
         Lighting.GlobalShadows = lightingSaved.GlobalShadows
     end)
     lightingSaved = nil
+end
+
+-- ============================================================
+-- Equipment screen overlay
+-- ============================================================
+-- The game keeps equipped mask/visor frames alive and moves them on/off screen.
+-- Hiding only the top-level GuiObject preserves the item, protection, filter,
+-- visor toggle, audio muffling and every non-equipment post-processing effect.
+local equipmentOverlay = {
+    names = {
+        "maska", "face.shield", "goggles", "motor.helmet",
+        "scuba.goggles", "altyn", "altyn2",
+    },
+    watched = setmetatable({}, { __mode = "k" }),
+    connections = {},
+}
+for _, overlayName in ipairs(equipmentOverlay.names) do
+    equipmentOverlay[overlayName] = true
+end
+
+function equipmentOverlay.each(callback)
+    local playerGui = player:FindFirstChildOfClass("PlayerGui")
+    local ui = playerGui and playerGui:FindFirstChild("UI")
+    local postFX = ui and ui:FindFirstChild("postFX")
+    if not postFX then return end
+    for _, name in ipairs(equipmentOverlay.names) do
+        local folder = postFX:FindFirstChild(name)
+        local frame = folder and folder:FindFirstChild("frame")
+        if frame and frame:IsA("GuiObject") then callback(frame) end
+    end
+end
+
+function equipmentOverlay.hide()
+    equipmentOverlay.each(function(frame)
+        if frame.Visible then frame.Visible = false end
+    end)
+end
+
+function equipmentOverlay.restore()
+    equipmentOverlay.each(function(frame)
+        -- trackOverlay sets this attribute only after the game has initialized
+        -- the frame. Its own Position still decides whether the visor is raised.
+        if frame:GetAttribute("Setup") == true then frame.Visible = true end
+    end)
+end
+
+function equipmentOverlay.track(frame)
+    if not frame or equipmentOverlay.watched[frame] or not frame:IsA("GuiObject") then return end
+    local folder = frame.Parent
+    if frame.Name ~= "frame" or not folder or equipmentOverlay[folder.Name] ~= true
+        or not folder.Parent or folder.Parent.Name ~= "postFX" then return end
+    equipmentOverlay.watched[frame] = true
+    equipmentOverlay.connections[#equipmentOverlay.connections + 1] = frame:GetPropertyChangedSignal("Visible"):Connect(function()
+        if cfg.HideEquipmentOverlay and frame.Visible then frame.Visible = false end
+    end)
+    if cfg.HideEquipmentOverlay and frame.Visible then frame.Visible = false end
+end
+
+function equipmentOverlay.startWatching()
+    local playerGui = player:FindFirstChildOfClass("PlayerGui")
+    if not playerGui or equipmentOverlay.root == playerGui then
+        equipmentOverlay.each(equipmentOverlay.track)
+        return
+    end
+    equipmentOverlay.root = playerGui
+    equipmentOverlay.connections[#equipmentOverlay.connections + 1] = playerGui.DescendantAdded:Connect(function(object)
+        equipmentOverlay.track(object)
+    end)
+    equipmentOverlay.each(equipmentOverlay.track)
+end
+
+function equipmentOverlay.stopWatching()
+    for _, connection in ipairs(equipmentOverlay.connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    equipmentOverlay.connections = {}
+    equipmentOverlay.watched = setmetatable({}, { __mode = "k" })
+    equipmentOverlay.root = nil
 end
 
 -- ============================================================
@@ -1849,6 +2127,80 @@ local function scanQuestItems()
     end
 end
 
+-- Inventory/quest data changes comparatively rarely, while the backpack GUI
+-- can contain several thousand descendants. Observe the handful of relevant
+-- nodes and debounce one rebuild instead of walking the whole tree on timers.
+local intelState = {
+    dirty = true, questDirty = true, root = nil, backpack = nil,
+    connections = {}, observed = setmetatable({}, { __mode = "k" }),
+    nextRefresh = 0, nextQuestRefresh = 0,
+}
+
+intelState.mark = function(includeHighlights)
+    intelState.dirty = true
+    if includeHighlights then intelState.questDirty = true end
+end
+
+intelState.disconnect = function()
+    for _, connection in ipairs(intelState.connections) do
+        pcall(function() connection:Disconnect() end)
+    end
+    intelState.connections = {}
+    intelState.observed = setmetatable({}, { __mode = "k" })
+end
+
+intelState.watchObject = function(object)
+    if not object or intelState.observed[object] then return end
+    local name = string.lower(object.Name)
+    local relevant = name == "quest" or name == "itemframe"
+        or name == "itemfolderobject" or name == "questname" or name == "questtype"
+        or name == "questframedescriptions"
+    if not relevant then return end
+    intelState.observed[object] = true
+    if object:IsA("GuiObject") then
+        intelState.connections[#intelState.connections + 1] = object:GetPropertyChangedSignal("Visible"):Connect(function()
+            intelState.mark(name == "quest" or name == "itemframe")
+        end)
+    end
+    if object:IsA("TextLabel") and (name == "questname" or name == "questtype") then
+        intelState.connections[#intelState.connections + 1] = object:GetPropertyChangedSignal("Text"):Connect(function()
+            intelState.mark(false)
+        end)
+    elseif object:IsA("ObjectValue") and name == "itemfolderobject" then
+        intelState.connections[#intelState.connections + 1] = object:GetPropertyChangedSignal("Value"):Connect(function()
+            intelState.mark(true)
+        end)
+    end
+end
+
+intelState.refreshWatchers = function()
+    local root = backpackRoot()
+    local backpack = player:FindFirstChild("Backpack")
+    if root == intelState.root and backpack == intelState.backpack then return end
+    intelState.disconnect()
+    intelState.root, intelState.backpack = root, backpack
+    intelState.mark(true)
+    if root then
+        intelState.connections[#intelState.connections + 1] = root.DescendantAdded:Connect(function(object)
+            intelState.watchObject(object)
+            intelState.mark(true)
+        end)
+        intelState.connections[#intelState.connections + 1] = root.DescendantRemoving:Connect(function()
+            intelState.mark(true)
+        end)
+        -- One initial discovery pass; subsequent work is entirely event-driven.
+        for _, object in ipairs(root:GetDescendants()) do intelState.watchObject(object) end
+    end
+    if backpack then
+        intelState.connections[#intelState.connections + 1] = backpack.DescendantAdded:Connect(function()
+            intelState.mark(false)
+        end)
+        intelState.connections[#intelState.connections + 1] = backpack.DescendantRemoving:Connect(function()
+            intelState.mark(false)
+        end)
+    end
+end
+
 -- ============================================================
 -- Aim Assist
 -- ============================================================
@@ -1869,11 +2221,13 @@ local aimServo = {
     gunStamp = -1, gunState = nil,
 }
 aimServo.silent = {
-    installed = false, network = nil, original = nil, wrapper = nil,
-    router = nil, handler = nil, clientEvent = nil,
-    pendingDirection = nil, pendingOrigin = nil, pendingAt = 0,
-    wasReadonly = false, lockedModel = nil, lockedPart = nil, lockedAt = 0,
-    redirected = 0, localRedirected = 0, lastTarget = "", lastError = "",
+    installed = false, fireDir = nil, fireDirCFrame = nil,
+    appliedFireDirCFrame = nil,
+    bound = false,
+    proxy = nil, sharedCaptured = false,
+    previousSharedAim = nil, previousSharedAlpha = nil, lastFired = nil,
+    lockedModel = nil, lockedPart = nil, lockedAt = 0,
+    redirected = 0, lastTarget = "", lastError = "",
     hold = 0.45,
 }
 local aimPointLocal = setmetatable({}, { __mode = "k" })
@@ -1960,16 +2314,14 @@ aimTrace.stop = function()
     return aimTrace.save()
 end
 
-if getgenv then
-    getgenv().__HAKO_AIM_TRACE = {
-        Start = aimTrace.start,
-        Stop = aimTrace.stop,
-        Save = aimTrace.save,
-        Status = function() return { active = aimTrace.active, count = #aimTrace.events, file = AIM_TRACE_FILE,
-            fullFile = AIM_TRACE_FULL_FILE, pendingFrames = #aimTrace.fullPending, frames = aimTrace.frame } end,
-        Get = function() return aimTrace.events end,
-    }
-end
+runtime.AimTrace = {
+    Start = aimTrace.start,
+    Stop = aimTrace.stop,
+    Save = aimTrace.save,
+    Status = function() return { active = aimTrace.active, count = #aimTrace.events, file = AIM_TRACE_FILE,
+        fullFile = AIM_TRACE_FULL_FILE, pendingFrames = #aimTrace.fullPending, frames = aimTrace.frame } end,
+    Get = function() return aimTrace.events end,
+}
 
 local function saveWhitelist()
     if not writefile then return end
@@ -2244,7 +2596,7 @@ local function canAimAtPart(cam, part)
     return visibleAimPoint(cam, part) ~= nil
 end
 
-local function aimParts(model)
+local function aimParts(model, nearestToCrosshair)
     local result, seen = {}, {}
     local function add(name)
         local part = model:FindFirstChild(name)
@@ -2254,7 +2606,16 @@ local function aimParts(model)
         end
     end
     local mode = cfg.AimTargetPart
-    if mode == "Smart" then
+    if nearestToCrosshair then
+        -- Stable combat zones for both R15 and R6 rigs. Hands/feet are omitted:
+        -- their tiny moving hitboxes cause unnecessary limb-to-limb jitter.
+        add("Head")
+        add("UpperTorso"); add("Torso"); add("LowerTorso"); add("HumanoidRootPart")
+        add("LeftUpperArm"); add("LeftLowerArm"); add("Left Arm")
+        add("RightUpperArm"); add("RightLowerArm"); add("Right Arm")
+        add("LeftUpperLeg"); add("LeftLowerLeg"); add("Left Leg")
+        add("RightUpperLeg"); add("RightLowerLeg"); add("Right Leg")
+    elseif mode == "Smart" then
         add("Head"); add("UpperTorso"); add("Torso"); add("LowerTorso"); add("HumanoidRootPart")
     elseif mode == "Body" or mode == "Torso" then
         add("UpperTorso"); add("Torso"); add("LowerTorso"); add("HumanoidRootPart")
@@ -2599,7 +2960,7 @@ getGunAimState = function()
     runtime.lastFired = lastFired
     runtime.heat = heat
     local shotAge = os.clock() - runtime.firedAt
-    local sharedAim = type(shared) == "table" and shared.aim == true
+    local sharedAim = type(gameShared) == "table" and gameShared.aim == true
     local ads = sharedAim
         or (character and (character:GetAttribute("aim") == true
             or character:GetAttribute("Aiming") == true
@@ -2671,15 +3032,33 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
         local anchor = not skip and (model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head"))
         if not anchor or (anchor.Position - myRoot.Position).Magnitude > maxDistance then skip = true end
 
+        -- Screen projection is orders of magnitude cheaper than the multipoint
+        -- ray chain below. Reject models well outside Silent FOV before asking
+        -- visibility/penetration questions. The generous margin preserves lead
+        -- compensation and partially visible limbs near the circle edge.
         if not skip then
-            for _, part in ipairs(aimParts(model)) do
+            local anchorScreen, anchorOnScreen = cam:WorldToViewportPoint(anchor.Position)
+            if not anchorOnScreen
+                or (Vector2.new(anchorScreen.X, anchorScreen.Y) - screenCenter).Magnitude > silentRadius * 1.8 then
+                skip = true
+            end
+        end
+
+        if not skip then
+            local nearestMode = cfg.SilentSmartPart == true
+            local modelPart, modelPoint, modelPartScore = nil, nil, math.huge
+            local modelScreenDistance, modelDistance = math.huge, math.huge
+            for _, part in ipairs(aimParts(model, nearestMode)) do
+                local coarseScreen, coarseOnScreen = cam:WorldToViewportPoint(part.Position)
+                local coarseDistance = coarseOnScreen
+                    and (Vector2.new(coarseScreen.X, coarseScreen.Y) - screenCenter).Magnitude or math.huge
                 -- Reuse the multipoint sampler from Smart Aim. Visibility is
                 -- validated against the real body point; the compensated point
                 -- is deliberately not ray-tested as a straight line because a
                 -- projectile has an arcing trajectory and would otherwise fail
                 -- every sufficiently long shot.
-                local rawPoint = visibleAimPoint(cam, part)
-                if rawPoint and aimServo.silentPathClear(cam, origin, part, rawPoint, true) then
+                local rawPoint = coarseDistance <= silentRadius * 1.45 and visibleAimPoint(cam, part) or nil
+                if rawPoint and aimServo.silentPathClear(cam, origin, part, rawPoint, false) then
                     local screen, onScreen = cam:WorldToViewportPoint(rawPoint)
                     local screenDistance = onScreen
                         and (Vector2.new(screen.X, screen.Y) - screenCenter).Magnitude or math.huge
@@ -2687,23 +3066,34 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
                         local predicted = aimServo.ballisticPoint(part, cam)
                         local desired = predicted - origin
                         if desired.Magnitude > 0.001 then
-                            local distance = desired.Magnitude
-                            local score = aimScore(humanoid, screenDistance, distance)
-                            if model == aimServo.silent.lockedModel
+                            local partScore = screenDistance
+                            if nearestMode and model == aimServo.silent.lockedModel
+                                and part == aimServo.silent.lockedPart
                                 and now - aimServo.silent.lockedAt <= aimServo.silent.hold then
-                                -- Do not alternate between two overlapping bots
-                                -- while the retained target is still shootable.
-                                score = -math.huge
+                                -- Eight pixels of hysteresis keeps animated arms
+                                -- and legs from swapping every rendered frame.
+                                partScore = partScore - 8
                             end
-                            if score < bestScore then
-                                bestPart, bestPoint, bestScore = part, predicted, score
+                            if partScore < modelPartScore then
+                                modelPart, modelPoint, modelPartScore = part, predicted, partScore
+                                modelScreenDistance, modelDistance = screenDistance, desired.Magnitude
                             end
-                            -- aimParts is ordered Head -> torso in Smart mode;
-                            -- use the first shootable point instead of drifting
-                            -- to a torso merely because it is one pixel nearer.
-                            break
+                            -- The legacy path preserves the selected-part order
+                            -- (Head -> torso). Smart Silent evaluates every zone.
+                            if not nearestMode then break end
                         end
                     end
+                end
+            end
+            if modelPart then
+                local score = aimScore(humanoid, modelScreenDistance, modelDistance)
+                if model == aimServo.silent.lockedModel
+                    and now - aimServo.silent.lockedAt <= aimServo.silent.hold then
+                    -- Retain the target model while its chosen zone is shootable.
+                    score = -math.huge
+                end
+                if score < bestScore then
+                    bestPart, bestPoint, bestScore = modelPart, modelPoint, score
                 end
             end
         end
@@ -2717,22 +3107,37 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
     return (bestPoint - origin).Unit, bestPart
 end
 
+local SILENT_BIND = "__hakoSilentNative"
+aimServo.restoreNativeSource = function()
+    local state = aimServo.silent
+    if state.fireDir and state.fireDir.Parent and state.fireDirCFrame
+        and (not state.appliedFireDirCFrame or state.fireDir.CFrame == state.appliedFireDirCFrame) then
+        state.fireDir.CFrame = state.fireDirCFrame
+    end
+    if state.sharedCaptured and type(gameShared) == "table" then
+        if gameShared.aimPos == state.proxy or gameShared.aimPos == state.fireDir then
+            gameShared.aimPos = state.previousSharedAim
+        end
+        if gameShared.aimAlpha == 1 then
+            gameShared.aimAlpha = state.previousSharedAlpha
+        end
+    end
+    if state.proxy then
+        pcall(function() state.proxy:Destroy() end)
+    end
+    state.fireDir, state.fireDirCFrame, state.appliedFireDirCFrame = nil, nil, nil
+    state.proxy, state.lastFired = nil, nil
+    state.sharedCaptured, state.previousSharedAim, state.previousSharedAlpha = false, nil, nil
+end
+
 aimServo.uninstallSilent = function()
     local state = aimServo.silent
-    if state.router and state.router.handler == state.handler then
-        state.router.handler = nil
+    if state.bound then
+        pcall(function() RunService:UnbindFromRenderStep(SILENT_BIND) end)
+        state.bound = false
     end
-    state.pendingDirection, state.pendingOrigin, state.pendingAt = nil, nil, 0
-    state.handler, state.clientEvent, state.router = nil, nil, nil
-    if not state.installed then return true end
-    if setreadonly and state.wasReadonly then pcall(setreadonly, state.network, false) end
-    local ok, err = pcall(function()
-        if state.network and state.network.FireServer == state.wrapper then
-            state.network.FireServer = state.original
-        end
-    end)
-    if setreadonly and state.wasReadonly then pcall(setreadonly, state.network, true) end
-    state.installed, state.network, state.original, state.wrapper = false, nil, nil, nil
+    local ok, err = pcall(aimServo.restoreNativeSource)
+    state.installed = false
     if not ok then state.lastError = tostring(err) end
     return ok, err
 end
@@ -2740,123 +3145,121 @@ end
 aimServo.installSilent = function()
     local state = aimServo.silent
     if state.installed then return true end
-    local network = type(shared) == "table" and shared.Network
-    -- Some places load the same Network module into a script-local variable
-    -- without publishing it to `shared`. Requiring an already loaded module
-    -- returns its cached table, so patching this fallback also reaches those
-    -- local references without replacing `shared.Network`.
-    if type(network) ~= "table" or type(network.FireServer) ~= "function" then
-        local ok, module = pcall(function()
-            local storage = ReplicatedStorage:FindFirstChild("Storage")
-            local modules = storage and storage:FindFirstChild("Modules")
-            local source = modules and modules:FindFirstChild("Network")
-            return source and require(source)
-        end)
-        if ok and type(module) == "table" then network = module end
-    end
-    local original = network and network.FireServer
-    if type(network) ~= "table" or type(original) ~= "function" then
-        state.lastError = "shared.Network.FireServer недоступен"
-        return false, state.lastError
-    end
-
-    local storage = ReplicatedStorage:FindFirstChild("Storage")
-    local events = storage and storage:FindFirstChild("Events")
-    local clientEvent = events and events:FindFirstChild("client")
-    if not clientEvent or not clientEvent:IsA("BindableEvent") then
-        state.lastError = "локальный канал выстрела Storage.Events.client недоступен"
-        return false, state.lastError
-    end
-
-    local env = getgenv and getgenv()
-    local router = env and env.__HAKO_NAMECALL_ROUTER
-    if type(router) ~= "table" or router.version ~= 1 then
-        if not env or type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then
-            state.lastError = "executor не поддерживает синхронизацию локальной пули"
-            return false, state.lastError
-        end
-        router = { version = 1, handler = nil }
-        local oldNamecall
-        local function dispatch(self, ...)
-            local handler = router.handler
-            if handler then
-                local ok, replace, packed, packedCount = pcall(handler, self, getnamecallmethod(), ...)
-                if ok and replace and type(packed) == "table" then
-                    return oldNamecall(self, table.unpack(packed, 1, packedCount))
-                end
-            end
-            return oldNamecall(self, ...)
-        end
-        local closure = newcclosure and newcclosure(dispatch) or dispatch
-        local hookOk, hookResult = pcall(hookmetamethod, game, "__namecall", closure)
-        if not hookOk or type(hookResult) ~= "function" then
-            state.lastError = "не удалось перехватить локальный FastCast: " .. tostring(hookResult)
-            return false, state.lastError
-        end
-        oldNamecall = hookResult
-        router.original = oldNamecall
-        env.__HAKO_NAMECALL_ROUTER = router
-    end
-
-    local localHandler = function(self, method, ...)
-        if self ~= clientEvent or method ~= "Fire" or not state.installed
-            or cfg.SilentAimEnabled ~= true or not state.pendingDirection then
-            return false
-        end
-        local count = select("#", ...)
-        local args = { ... }
-        local fresh = os.clock() - state.pendingAt <= 0.20
-        local matchingOrigin = typeof(args[3]) == "Vector3" and state.pendingOrigin
-            and (args[3] - state.pendingOrigin).Magnitude <= 3
-        if args[1] == "fire" and fresh and matchingOrigin and typeof(args[4]) == "Vector3" then
-            args[4] = state.pendingDirection
-            state.pendingDirection, state.pendingOrigin, state.pendingAt = nil, nil, 0
-            state.localRedirected = state.localRedirected + 1
-            return true, args, count
-        end
-        return false
-    end
-
-    local wasReadonly = false
-    pcall(function() if isreadonly then wasReadonly = isreadonly(network) end end)
-    local wrapper
-    wrapper = function(self, action, ...)
-        local count = select("#", ...)
-        local args = { ... }
-        if action == "fire" and cfg.SilentAimEnabled == true
-            and typeof(args[2]) == "Vector3" and typeof(args[3]) == "Vector3" then
-            local redirected, targetPart = aimServo.pickSilentDirection(args[2], args[3])
-            if redirected then
-                args[3] = redirected
-                state.pendingDirection, state.pendingOrigin = redirected, args[2]
-                state.pendingAt = os.clock()
-                state.redirected = state.redirected + 1
-                if aimTrace.active then
-                    aimTrace.add("silent_redirect", {
-                        target = state.lastTarget,
-                        part = targetPart and targetPart.Name or "",
-                    })
-                end
-            end
-        end
-        return original(self, action, table.unpack(args, 1, count))
-    end
-
     local ok, err = pcall(function()
-        if setreadonly and wasReadonly then setreadonly(network, false) end
-        network.FireServer = wrapper
-        if setreadonly and wasReadonly then setreadonly(network, true) end
+        RunService:BindToRenderStep(SILENT_BIND, Enum.RenderPriority.Last.Value + 100, function()
+            local cam = workspace.CurrentCamera
+            if not cam then return end
+            local ran, updateError = pcall(aimServo.updateNativeSilent, cam)
+            if not ran then
+                state.lastError = tostring(updateError)
+                -- Restore only values still owned by this script. Keep the bind
+                -- installed so a transient tool/respawn race can recover next frame.
+                pcall(aimServo.restoreNativeSource)
+            end
+        end)
     end)
-    if not ok or network.FireServer ~= wrapper then
-        pcall(function() if setreadonly and wasReadonly then setreadonly(network, true) end end)
-        state.lastError = tostring(err or "метод защищён от изменения")
+    if not ok then
+        state.lastError = tostring(err)
         return false, state.lastError
     end
-    state.installed, state.network, state.original = true, network, original
-    state.wrapper, state.wasReadonly, state.lastError = wrapper, wasReadonly, ""
-    state.router, state.handler, state.clientEvent = router, localHandler, clientEvent
-    router.handler = localHandler
+    state.bound, state.installed, state.lastError = true, true, ""
     return true
+end
+
+aimServo.updateNativeSilent = function(cam)
+    local state = aimServo.silent
+    if not state.installed or cfg.SilentAimEnabled ~= true then return end
+    local character = player.Character
+    local tool = character and character:FindFirstChildWhichIsA("Tool")
+    local handle = tool and ((tool:FindFirstChild("_mod") and tool._mod:FindFirstChild("Handle", true))
+        or tool:FindFirstChild("Handle", true))
+    local fireDir = handle and handle:FindFirstChild("FireDir", true)
+    if not tool or tool:GetAttribute("Gun") ~= true or not fireDir or not fireDir:IsA("Attachment") then
+        if state.fireDir then pcall(aimServo.restoreNativeSource) end
+        return
+    end
+
+    if state.fireDir ~= fireDir then
+        if state.fireDir then pcall(aimServo.restoreNativeSource) end
+        state.fireDir, state.fireDirCFrame = fireDir, fireDir.CFrame
+        state.appliedFireDirCFrame = nil
+        state.sharedCaptured, state.previousSharedAim, state.previousSharedAlpha = false, nil, nil
+        state.lastFired = tool:GetAttribute("LastFired")
+    elseif state.appliedFireDirCFrame and fireDir.CFrame ~= state.appliedFireDirCFrame then
+        -- The weapon updated its native direction since our last frame. Treat
+        -- that value as the new baseline instead of restoring a stale CFrame.
+        state.fireDirCFrame = fireDir.CFrame
+        state.appliedFireDirCFrame = nil
+    end
+
+    local origin = equippedMuzzlePosition(character) or fireDir.WorldPosition
+    local direction, targetPart = aimServo.pickSilentDirection(origin, cam.CFrame.LookVector)
+    if not direction then
+        if state.fireDir and state.fireDirCFrame
+            and (not state.appliedFireDirCFrame or state.fireDir.CFrame == state.appliedFireDirCFrame) then
+            state.fireDir.CFrame = state.fireDirCFrame
+        end
+        state.appliedFireDirCFrame = nil
+        if state.sharedCaptured and type(gameShared) == "table" then
+            if gameShared.aimPos == state.proxy or gameShared.aimPos == state.fireDir then
+                gameShared.aimPos = state.previousSharedAim
+            end
+            if gameShared.aimAlpha == 1 then
+                gameShared.aimAlpha = state.previousSharedAlpha
+            end
+        end
+        state.sharedCaptured, state.previousSharedAim, state.previousSharedAlpha = false, nil, nil
+        return
+    end
+
+    local parent = fireDir.Parent
+    if parent and parent:IsA("BasePart") then
+        local world = CFrame.lookAt(fireDir.WorldPosition, fireDir.WorldPosition + direction)
+        fireDir.CFrame = parent.CFrame:ToObjectSpace(world)
+        state.appliedFireDirCFrame = fireDir.CFrame
+        if not state.proxy or state.proxy.Parent ~= parent then
+            if state.proxy then pcall(function() state.proxy:Destroy() end) end
+            state.proxy = Instance.new("Attachment")
+            state.proxy.Name = "__hakoAimProxy"
+            state.proxy.Visible = false
+            state.proxy.Parent = parent
+        end
+        local proxyWorld = CFrame.lookAt(state.proxy.WorldPosition, state.proxy.WorldPosition + direction)
+        state.proxy.CFrame = parent.CFrame:ToObjectSpace(proxyWorld)
+        if type(gameShared) == "table" then
+            if state.sharedCaptured then
+                -- Preserve newer values written by the game while Silent Aim
+                -- was active, so cleanup never restores an obsolete ADS state.
+                if gameShared.aimPos ~= state.proxy then
+                    state.previousSharedAim = gameShared.aimPos
+                end
+                if gameShared.aimAlpha ~= 1 then
+                    state.previousSharedAlpha = gameShared.aimAlpha
+                end
+            end
+            if not state.sharedCaptured then
+                state.sharedCaptured = true
+                state.previousSharedAim = gameShared.aimPos
+                state.previousSharedAlpha = gameShared.aimAlpha
+            end
+            -- The game's getHitPos lerps FireDir toward aimPos by aimAlpha.
+            -- A dedicated proxy survives the weapon resetting FireDir during
+            -- its input callback; alpha=1 also makes hip-fire deterministic.
+            gameShared.aimPos = state.proxy
+            gameShared.aimAlpha = 1
+        end
+        local fired = tool:GetAttribute("LastFired")
+        if fired ~= nil and fired ~= state.lastFired then
+            state.redirected = state.redirected + 1
+            if aimTrace.active then
+                aimTrace.add("silent_native", {
+                    target = state.lastTarget,
+                    part = targetPart and targetPart.Name or "",
+                })
+            end
+        end
+        state.lastFired = fired
+    end
 end
 
 -- Toggle the player nearest the crosshair in/out of the aim whitelist
@@ -3020,11 +3423,11 @@ end
 local function updateAim(dt, cam, vpSize, myRoot)
     if cfg.AimEnabled and cfg.AimShowFov then
         local radius = aimServo.screenRadius(cam, vpSize)
-        fovCircle.Position = UDim2.fromOffset(vpSize.X / 2, vpSize.Y / 2)
-        fovCircle.Size = UDim2.fromOffset(radius * 2, radius * 2)
-        fovCircle.Visible = true
+        setProp(fovCircle, "Position", UDim2.fromOffset(vpSize.X / 2, vpSize.Y / 2))
+        setProp(fovCircle, "Size", UDim2.fromOffset(radius * 2, radius * 2))
+        setProp(fovCircle, "Visible", true)
     else
-        fovCircle.Visible = false
+        setProp(fovCircle, "Visible", false)
     end
 
     if not cfg.AimEnabled or not aimHolding then
@@ -3295,9 +3698,7 @@ end
 -- ============================================================
 local renderConn
 local scanTimer = 0
-local questAccum = 0
 local exfilRefreshAccum = 999
-local intelAccum = 999
 local doorAccum = 999
 
 local function prepareEntityFrame(myRoot)
@@ -3337,9 +3738,9 @@ local function prepareEntityFrame(myRoot)
     local threatParts = {string.format("Игроки: %d", playersNear), string.format("NPC: %d", npcsNear)}
     if nearestPlayerDist then threatParts[#threatParts + 1] = string.format("ближайший: %.0fм", nearestPlayerDist) end
     if nearestSniper then threatParts[#threatParts + 1] = string.format("⚠ снайпер: %.0fм", sniperDist) end
-    nearbyLabel.Visible = cfg.Enabled and cfg.ThreatPanel
-    nearbyLabel.Text = table.concat(threatParts, "  •  ")
-    nearbyLabel.TextColor3 = (playersNear > 0 or nearestSniper) and Color3.fromRGB(255, 110, 90) or Color3.fromRGB(180, 220, 255)
+    setProp(nearbyLabel, "Visible", cfg.Enabled and cfg.ThreatPanel)
+    setProp(nearbyLabel, "Text", table.concat(threatParts, "  •  "))
+    setProp(nearbyLabel, "TextColor3", (playersNear > 0 or nearestSniper) and Color3.fromRGB(255, 110, 90) or Color3.fromRGB(180, 220, 255))
 end
 
 local function onRender(dt)
@@ -3349,15 +3750,21 @@ local function onRender(dt)
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
     local vpSize = cam.ViewportSize
 
+    -- Token bucket keeps the same approximate visibility refresh rate while
+    -- spreading expensive ray batches instead of synchronising all entities.
+    local visibilityRate = math.max(30, renderState.cacheSize * 11)
+    renderState.visibilityTokens = math.min(8, renderState.visibilityTokens + dt * visibilityRate)
+
     scanTimer = scanTimer + dt
     if scanTimer >= 1.5 then
         scanTimer = 0
-        if cfg.Enabled or cfg.AimEnabled then
+        if cfg.Enabled or cfg.AimEnabled or cfg.SilentAimEnabled then
             scanEntities()
             cleanStale()
         end
         if cfg.LootEnabled and lootDirty then rebuildLoot() end
         if not cfg.RaidTimer then detectContext() end
+        intelState.refreshWatchers()
     end
 
     -- Update loot first so entity highlights receive only the actually free
@@ -3375,24 +3782,25 @@ local function onRender(dt)
         nearbyLabel.Visible = false
     end
 
-    if cfg.ExfilESP then
+    if cfg.ExfilESP or cfg.SmartRaidHelper then
         exfilRefreshAccum = exfilRefreshAccum + dt
         if exfilRefreshAccum >= 0.5 then
             exfilRefreshAccum = 0
             findExfils()
         end
-        drawExfils(myRoot, cam)
+        if cfg.ExfilESP then drawExfils(myRoot, cam) else hideExfils() end
     else
         hideExfils()
     end
-    if cfg.RaidTimer then updateRaidTimer(dt) else raidPill.Visible = false end
+    if cfg.RaidTimer or cfg.SmartRaidHelper then updateRaidTimer(dt) else raidPill.Visible = false end
 
     local wantsIntel = cfg.InventoryHelper or cfg.QuestHelper
         or (cfg.LootEnabled and cfg.LootShowAdvice) or (cfg.DoorESP and cfg.DoorCheckKeys)
     if wantsIntel then
-        intelAccum = intelAccum + dt
-        if intelAccum >= 0.75 then
-            intelAccum = 0
+        local now = os.clock()
+        if intelState.dirty and now >= intelState.nextRefresh then
+            intelState.nextRefresh = now + 0.10
+            intelState.dirty = false
             if cfg.QuestHelper then
                 pcall(rebuildQuestPlan)
             else
@@ -3408,21 +3816,33 @@ local function onRender(dt)
 
     if cfg.DoorESP then
         doorAccum = doorAccum + dt
-        if doorAccum >= 1 then
+        if doorAccum >= 0.15 then
             doorAccum = 0
             pcall(refreshDoors)
+            selectDoors(myRoot)
         end
         drawDoors(myRoot, cam)
     else
         hideDoors()
     end
 
-    if cfg.QuestHelper then
-        questAccum = questAccum + dt
-        if questAccum >= 0.35 then
-            questAccum = 0
+    if cfg.QuestHelper and intelState.questDirty then
+        local now = os.clock()
+        if now >= intelState.nextQuestRefresh then
+            intelState.nextQuestRefresh = now + 0.10
+            intelState.questDirty = false
             pcall(scanQuestItems)
         end
+    end
+
+    if cfg.SmartRaidHelper then
+        raidAdvisor.accum = raidAdvisor.accum + dt
+        if raidAdvisor.accum >= 0.5 then
+            raidAdvisor.accum = 0
+            raidAdvisor.update(myRoot)
+        end
+    else
+        raidAdvisor.hide()
     end
 end
 
@@ -3454,15 +3874,18 @@ local function unbindAim()
 end
 
 local function anyActive()
-    return cfg.Enabled or cfg.AimEnabled or cfg.LootEnabled or cfg.QuestHelper or cfg.ExfilESP or cfg.RaidTimer
-        or cfg.InventoryHelper or cfg.DoorESP
+    return cfg.Enabled or cfg.AimEnabled or cfg.SilentAimEnabled or cfg.LootEnabled or cfg.QuestHelper or cfg.ExfilESP or cfg.RaidTimer
+        or cfg.InventoryHelper or cfg.DoorESP or cfg.HideEquipmentOverlay or cfg.SmartRaidHelper
 end
 
 local function startRender()
     if renderConn then return end
     scanTimer = 0
-    if cfg.Enabled or cfg.AimEnabled then scanEntities() end
+    if cfg.Enabled or cfg.AimEnabled or cfg.SilentAimEnabled then scanEntities() end
     if cfg.LootEnabled then rebuildLoot() end
+    intelState.refreshWatchers()
+    equipmentOverlay.startWatching()
+    if cfg.HideEquipmentOverlay then equipmentOverlay.hide() end
     renderConn = RunService.RenderStepped:Connect(onRender)
 end
 
@@ -3480,6 +3903,7 @@ local function stopRender()
     contextLabel.Visible = false
     inventoryLabel.Visible = false
     questPlannerLabel.Visible = false
+    raidAdvisor.hide()
 end
 
 local function ensureRender()
@@ -3512,6 +3936,16 @@ conns[#conns + 1] = Players.PlayerRemoving:Connect(function(plr)
         destroyEntry(plr.Character)
     end
 end)
+conns[#conns + 1] = player.CharacterRemoving:Connect(function()
+    -- Character/tool instances can disappear between render callbacks. Release
+    -- every borrowed game value immediately while leaving the feature enabled
+    -- for the next character.
+    pcall(aimServo.restoreNativeSource)
+    aimServo.silent.lockedModel = nil
+    aimServo.silent.lockedPart = nil
+    aimServo.silent.lockedAt = 0
+    aimServo.silent.lastTarget = ""
+end)
 
 -- ============================================================
 -- Cleanup
@@ -3526,7 +3960,10 @@ local function cleanup(fromWindow)
     unbindAim()
     stopRender()
     restoreFullbright()
+    equipmentOverlay.stopWatching()
+    equipmentOverlay.restore()
     clearQuestHL()
+    intelState.disconnect()
     pcall(function() espGui:Destroy() end)
     for _, c in ipairs(conns) do pcall(function() c:Disconnect() end) end
     for _, c in ipairs(entityWatchConns) do pcall(function() c:Disconnect() end) end
@@ -3535,27 +3972,33 @@ local function cleanup(fromWindow)
     entityWatchConns = {}
     lootWatchConns = {}
     cache = {}
-    if getgenv then
-        getgenv().__HAKO_CLEANUP = nil
-        getgenv().__HAKO_CONFIG_API = nil
-        getgenv().__HAKO_AIM_TRACE = nil
-        getgenv().__HAKO_AIM_DEBUG = nil
-        getgenv().__HAKO_SILENT_DEBUG = nil
+    renderState.cacheSize = 0
+    runtime.Stage = "cleaned"
+    runtime.Cleanup = nil
+    runtime.Config = nil
+    runtime.AimTrace = nil
+    runtime.AimDebug = nil
+    runtime.SilentDebug = nil
+    runtime.RaidAdvisor = nil
+    if getgenv and getgenv().__HAKO_RUNTIME == runtime then
+        getgenv().__HAKO_RUNTIME = nil
     end
     if Window and not fromWindow then pcall(function() Window:Unload() end) end
 end
 
-if getgenv then getgenv().__HAKO_CLEANUP = cleanup end
+runtime.Cleanup = cleanup
+conns[#conns + 1] = player.OnTeleport:Connect(function(state)
+    if state == Enum.TeleportState.Started or state == Enum.TeleportState.InProgress then
+        cleanup()
+    end
+end)
 
 -- ============================================================
 -- MacLib UI
 -- ============================================================
-local menuUIS = game:GetService("UserInputService")
-local menuWasOpen = false
-local savedMouseIcon = menuUIS.MouseIconEnabled
-local savedMouseBehavior = menuUIS.MouseBehavior
-local menuRestoreUntil = 0
-local menuRestoreToken = 0
+local menuState = { uis = game:GetService("UserInputService"), wasOpen = false, restoreUntil = 0, restoreToken = 0 }
+menuState.savedIcon = menuState.uis.MouseIconEnabled
+menuState.savedBehavior = menuState.uis.MouseBehavior
 
 Window = MacLib:Window({
     Title = "hako",
@@ -3576,23 +4019,23 @@ end)
 do
     local function applySavedMouse()
         pcall(function()
-            menuUIS.MouseIconEnabled = savedMouseIcon
-            menuUIS.MouseBehavior = savedMouseBehavior
+            menuState.uis.MouseIconEnabled = menuState.savedIcon
+            menuState.uis.MouseBehavior = menuState.savedBehavior
         end)
     end
 
     restoreMenuMouse = function()
-        menuWasOpen = false
-        menuRestoreUntil = os.clock() + 0.85
-        menuRestoreToken = menuRestoreToken + 1
-        local token = menuRestoreToken
+        menuState.wasOpen = false
+        menuState.restoreUntil = os.clock() + 0.85
+        menuState.restoreToken = menuState.restoreToken + 1
+        local token = menuState.restoreToken
         applySavedMouse()
         -- MacLib and the game's own menu handlers can write the cursor one or
         -- two frames after GetState() changes. Re-apply the captured game state
         -- briefly, then return ownership completely to the game.
         for _, delay in ipairs({ 0.03, 0.10, 0.25, 0.50, 0.80 }) do
             task.delay(delay, function()
-                if token == menuRestoreToken and not menuWasOpen then
+                if token == menuState.restoreToken and not menuState.wasOpen then
                     applySavedMouse()
                 end
             end)
@@ -3603,24 +4046,24 @@ do
         local ok, open = pcall(function() return Window:GetState() end)
         open = ok and open == true
         if open then
-            if not menuWasOpen then
-                menuWasOpen = true
-                menuRestoreToken = menuRestoreToken + 1
-                menuRestoreUntil = 0
+            if not menuState.wasOpen then
+                menuState.wasOpen = true
+                menuState.restoreToken = menuState.restoreToken + 1
+                menuState.restoreUntil = 0
             end
-            if not menuUIS.MouseIconEnabled then menuUIS.MouseIconEnabled = true end
-            if menuUIS.MouseBehavior ~= Enum.MouseBehavior.Default then
-                menuUIS.MouseBehavior = Enum.MouseBehavior.Default
+            if not menuState.uis.MouseIconEnabled then menuState.uis.MouseIconEnabled = true end
+            if menuState.uis.MouseBehavior ~= Enum.MouseBehavior.Default then
+                menuState.uis.MouseBehavior = Enum.MouseBehavior.Default
             end
-        elseif menuWasOpen then
+        elseif menuState.wasOpen then
             restoreMenuMouse()
-        elseif os.clock() < menuRestoreUntil then
+        elseif os.clock() < menuState.restoreUntil then
             applySavedMouse()
         else
             -- Keep the snapshot current while the game owns the mouse. This
             -- preserves lobby cursor state as well as raid LockCenter state.
-            savedMouseIcon = menuUIS.MouseIconEnabled
-            savedMouseBehavior = menuUIS.MouseBehavior
+            menuState.savedIcon = menuState.uis.MouseIconEnabled
+            menuState.savedBehavior = menuState.uis.MouseBehavior
         end
     end)
 end
@@ -3746,12 +4189,14 @@ helperL:Header({ Name = "Рейд" })
 helperL:Toggle({ Name = "Помощник по инвентарю", Default = guiDefault("InventoryHelper", true),
     Callback = function(v)
         cfg.InventoryHelper = v
+        if v then intelState.mark(false) end
         if not v then inventoryLabel.Visible = false end
         ensureRender()
     end }, "inventoryHelper")
 helperL:Toggle({ Name = "Квестовый помощник", Default = guiDefault("QuestHelper", true),
     Callback = function(v)
         cfg.QuestHelper = v
+        if v then intelState.mark(true) end
         if not v then
             activeQuestItems = {}
             questPlannerLabel.Visible = false
@@ -3759,6 +4204,20 @@ helperL:Toggle({ Name = "Квестовый помощник", Default = guiDefa
         end
         ensureRender()
     end }, "questHelper")
+helperL:Header({ Name = "Умный рейд" })
+helperL:Toggle({ Name = "Советник решений", Default = guiDefault("SmartRaidHelper", true),
+    Callback = function(v)
+        cfg.SmartRaidHelper = v == true
+        raidAdvisor.accum = 999
+        if cfg.SmartRaidHelper then intelState.mark(true) else raidAdvisor.hide() end
+        ensureRender()
+    end }, "smartRaidHelper")
+helperL:Slider({ Name = "Цель по стоимости", Default = guiDefault("RaidAdvisorValue", 12000),
+    Minimum = 1000, Maximum = 50000, DisplayMethod = "Round", Precision = 0,
+    Callback = function(v) cfg.RaidAdvisorValue = v; raidAdvisor.accum = 999 end }, "smartRaidValue")
+helperL:Slider({ Name = "Критическое время (сек)", Default = guiDefault("RaidAdvisorTime", 300),
+    Minimum = 60, Maximum = 900, DisplayMethod = "Round", Precision = 0,
+    Callback = function(v) cfg.RaidAdvisorTime = v; raidAdvisor.accum = 999 end }, "smartRaidTime")
 helperL:Toggle({ Name = "Панель угроз", Default = guiDefault("ThreatPanel", true),
     Callback = function(v) cfg.ThreatPanel = v end }, "espThreatPanel")
 
@@ -3800,7 +4259,11 @@ worldL:Toggle({ Name = "Авто: лобби / рейд", Default = guiDefault("
 
 worldR:Header({ Name = "Двери" })
 worldR:Toggle({ Name = "ESP дверей", Default = guiDefault("DoorESP", true),
-    Callback = function(v) cfg.DoorESP = v; if not v then hideDoors() end; ensureRender() end }, "doorEsp")
+    Callback = function(v)
+        cfg.DoorESP = v
+        if v then doorAccum = 999; intelState.mark(false) else hideDoors() end
+        ensureRender()
+    end }, "doorEsp")
 worldR:Slider({ Name = "Дальность дверей", Default = guiDefault("DoorMaxDist", 90),
     Minimum = 20, Maximum = 200, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.DoorMaxDist = v end }, "doorDistance")
@@ -3811,6 +4274,14 @@ worldR:Toggle({ Name = "Проверять ключи", Default = guiDefault("Do
 worldR:Header({ Name = "Окружение" })
 worldR:Toggle({ Name = "Полная яркость", Default = guiDefault("Fullbright", false),
     Callback = function(v) cfg.Fullbright = v; if v then applyFullbright() else restoreFullbright() end end }, "worldFullbright")
+worldR:Toggle({ Name = "Скрыть маску / визор", Default = guiDefault("HideEquipmentOverlay", true),
+    Callback = function(v)
+        cfg.HideEquipmentOverlay = v == true
+        equipmentOverlay.startWatching()
+        if cfg.HideEquipmentOverlay then equipmentOverlay.hide() else equipmentOverlay.restore() end
+        ensureRender()
+    end }, "worldHideEquipmentOverlay")
+worldR:Label({ Text = "Только экранная рамка; защита, фильтр и звук сохраняются." })
 end
 
 -- ---------- AIM TAB ----------
@@ -3861,13 +4332,17 @@ aimLft:Toggle({ Name = "Включить Silent Aim", Default = guiDefault("Sile
         else
             aimServo.uninstallSilent()
         end
+        ensureRender()
     end }, "silentEnabled")
 aimLft:Slider({ Name = "Радиус Silent Aim", Default = guiDefault("SilentAimFovPx", 250),
     Minimum = 50, Maximum = 600, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.SilentAimFovPx = v end }, "silentFovPx")
+aimLft:Toggle({ Name = "Умный выбор части тела", Default = guiDefault("SilentSmartPart", true),
+    Callback = function(v) cfg.SilentSmartPart = v == true end }, "silentSmartPart")
 aimLft:Label({ Text = "Радиус считается в пикселях от центра экрана." })
+aimLft:Label({ Text = "Выбирает ближайшую к прицелу видимую часть тела." })
 aimLft:Label({ Text = "Всегда 100% • ADS не требуется • удерживает одну цель" })
-aimLft:Label({ Text = "Подменяет направление fire; гарантий от античита нет." })
+aimLft:Label({ Text = "Использует штатные FireDir/aimPos оружия; гарантий от античита нет." })
 
 aimRgt:Header({ Name = "Выбор цели" })
 guiDefault("AimTargetPart", "Smart")
@@ -3908,13 +4383,26 @@ cfgTab:InsertConfigSection("Left")
 local cfgR = cfgTab:Section({ Side = "Right" })
 cfgR:Header({ Name = "Скрипт" })
 cfgR:Label({ Text = "Визуалы не меняют workspace; гарантии обхода античита нет." })
-cfgR:Label({ Text = "Обычный Aim двигает мышь. Silent Aim синхронизирует network fire и локальную пулю." })
+cfgR:Label({ Text = "Обычный Aim двигает мышь. Silent Aim временно направляет штатные FireDir/aimPos оружия." })
 cfgR:Divider()
 cfgR:Button({ Name = "Выгрузить скрипт", Callback = function() cleanup() end })
 end
 
-if getgenv then
-    getgenv().__HAKO_SILENT_DEBUG = {
+do
+    runtime.RaidAdvisor = {
+        Status = function()
+            return {
+                enabled = cfg.SmartRaidHelper == true,
+                visible = raidAdvisor.frame.Visible,
+                title = raidAdvisor.title.Text,
+                stats = raidAdvisor.stats.Text,
+                action = raidAdvisor.action.Text,
+                valueGoal = tonumber(cfg.RaidAdvisorValue) or 12000,
+                criticalTime = tonumber(cfg.RaidAdvisorTime) or 300,
+            }
+        end,
+    }
+    runtime.SilentDebug = {
         Status = function()
             local state = aimServo.silent
             return {
@@ -3922,8 +4410,9 @@ if getgenv then
                 installed = state.installed == true,
                 fovPx = tonumber(cfg.SilentAimFovPx) or 250,
                 redirected = state.redirected,
-                localRedirected = state.localRedirected,
                 lastTarget = state.lastTarget,
+                lastPart = state.lockedPart and state.lockedPart.Name or "",
+                smartPart = cfg.SilentSmartPart == true,
                 lastError = state.lastError,
             }
         end,
@@ -3932,7 +4421,7 @@ if getgenv then
             return aimServo.uninstallSilent()
         end,
     }
-    getgenv().__HAKO_AIM_DEBUG = {
+    runtime.AimDebug = {
         Status = function()
             local cam = workspace.CurrentCamera
             local gun = getGunAimState()
@@ -3951,7 +4440,7 @@ if getgenv then
             }
         end,
     }
-    getgenv().__HAKO_CONFIG_API = {
+    runtime.Config = {
         Save = function(name) return MacLib:SaveConfig(name) end,
         Load = function(name) return MacLib:LoadConfig(name) end,
         List = function() return MacLib:RefreshConfigList() end,
@@ -4008,7 +4497,13 @@ Window:Notify({
 })
 
 task.spawn(function()
-    pcall(function() MacLib:LoadAutoLoadConfig() end)
+    local loaded, loadError = pcall(function() MacLib:LoadAutoLoadConfig() end)
+    if not loaded then
+        runtime.Stage = "error"
+        runtime.Error = tostring(loadError)
+        return
+    end
     if cfg.Fullbright then applyFullbright() end
     ensureRender()
+    runtime.Stage = "ready"
 end)
