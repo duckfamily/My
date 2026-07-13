@@ -1626,6 +1626,7 @@ end
 -- ============================================================
 local aimTarget = nil
 local aimOccludedAt = nil
+local aimTargetVisible = true
 local aimLockedModel = nil
 local aimLockedAt = 0
 local aimMouseWarningShown = false
@@ -1663,6 +1664,7 @@ mkStroke(fovCircle, FOV_COL, 1.5, 0.4)
 local aimRayParams = RaycastParams.new()
 aimRayParams.FilterType = Enum.RaycastFilterType.Exclude
 aimRayParams.IgnoreWater = true
+pcall(function() aimRayParams.CollisionGroup = "Raycast" end)
 
 local AIM_STYLE = {
     Legit = { smoothness = 7, deadzone = 2, maxStep = 18, recoil = 0.75, spreadDeadzone = 2.5, targetHold = 0.55, switchRatio = 1.08, switchBonus = 3 },
@@ -1673,29 +1675,46 @@ local function aimStyle()
     return AIM_STYLE[cfg.AimStyle] or AIM_STYLE.Legit
 end
 
+local function equippedMuzzlePosition(character)
+    local tool = character and character:FindFirstChildWhichIsA("Tool")
+    if not tool or tool:GetAttribute("Gun") ~= true then return nil end
+    local model = tool:FindFirstChild("_mod")
+    local handle = model and model:FindFirstChild("Handle")
+    local muzzle = handle and handle:FindFirstChild("MuzzleFX")
+    if muzzle and muzzle:IsA("Attachment") then return muzzle.WorldPosition end
+    if muzzle and muzzle:IsA("BasePart") then return muzzle.Position end
+    return nil
+end
+
+local function rayReachesAimPart(origin, targetPart, targetPosition, filter)
+    local direction = targetPosition - origin
+    if direction.Magnitude < 0.001 then return false end
+    aimRayParams.FilterDescendantsInstances = filter
+    local result = workspace:Raycast(origin, direction, aimRayParams)
+    return result ~= nil and result.Instance == targetPart
+end
+
 local function hasAimLineOfSight(cam, targetPart, targetPosition)
+    if not targetPart.CanQuery then return false end
     local filter = {}
     local character = player.Character
     if character then filter[#filter + 1] = character end
     filter[#filter + 1] = cam
-    local origin = cam.CFrame.Position
+    local ignored = workspace:FindFirstChild("Ignored")
+    if ignored then filter[#filter + 1] = ignored end
     targetPosition = targetPosition or targetPart.Position
-
-    -- Skip a few non-collidable decorative hits (grass, effects, loose visual
-    -- meshes). Solid and invisible colliders still block the aim ray.
-    for _ = 1, 6 do
-        aimRayParams.FilterDescendantsInstances = filter
-        local result = workspace:Raycast(origin, targetPosition - origin, aimRayParams)
-        if not result then return true end
-        local hit = result.Instance
-        if hit and hit:IsDescendantOf(targetPart.Parent) then return true end
-        if hit and hit:IsA("BasePart") and not hit.CanCollide then
-            filter[#filter + 1] = hit
-        else
-            return false
-        end
+    if not rayReachesAimPart(cam.CFrame.Position, targetPart, targetPosition, filter) then
+        return false
     end
-    return false
+
+    -- Camera visibility is insufficient near cover: the game fires from
+    -- Handle.MuzzleFX. Require the same point to be clear from the muzzle so a
+    -- visible head above a truck is not selected while the barrel hits its side.
+    local muzzlePosition = equippedMuzzlePosition(character)
+    if muzzlePosition and not rayReachesAimPart(muzzlePosition, targetPart, targetPosition, filter) then
+        return false
+    end
+    return true
 end
 
 local function currentAimPoint(part)
@@ -1898,8 +1917,10 @@ local function isTargetStillValid(cam, myRoot)
     local visiblePart = resolveAimPart(model, cam)
     if visiblePart then
         aimTarget = visiblePart
+        aimTargetVisible = true
         aimOccludedAt = nil
     elseif cfg.AimLosCheck then
+        aimTargetVisible = false
         aimOccludedAt = aimOccludedAt or os.clock()
         local grace = cfg.AimRetention == "Hard" and 0.35 or 0.2
         if os.clock() - aimOccludedAt > grace then return false end
@@ -2048,6 +2069,7 @@ local function updateAim(dt, cam, vpSize, myRoot)
     if not cfg.AimEnabled or not aimHolding then
         aimTarget = nil
         aimOccludedAt = nil
+        aimTargetVisible = true
         aimLockedModel = nil
         aimLockedAt = 0
         return
@@ -2062,20 +2084,26 @@ local function updateAim(dt, cam, vpSize, myRoot)
     if not myRoot then
         aimTarget = nil
         aimOccludedAt = nil
+        aimTargetVisible = true
+        aimLockedModel = nil
+        aimLockedAt = 0
         return
     end
 
     if cfg.AimRetention ~= "Off" and aimTarget then
         if not isTargetStillValid(cam, myRoot) then
             aimTarget = pickAimTarget(cam, vpSize, myRoot)
+            aimTargetVisible = aimTarget ~= nil
             aimOccludedAt = nil
         end
     else
         aimTarget = pickAimTarget(cam, vpSize, myRoot)
+        aimTargetVisible = aimTarget ~= nil
         aimOccludedAt = nil
     end
 
     if not aimTarget or not aimTarget.Parent then return end
+    if cfg.AimLosCheck and not aimTargetVisible then return end
 
     -- Don't fight the menu cursor
     local menuOpen = false
