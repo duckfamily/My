@@ -1819,6 +1819,7 @@ local aimMouseWarningShown = false
 local aimServo = {
     model = nil, part = nil, prevDx = nil, prevDy = nil,
     damping = 1, brakeUntil = 0, stableFrames = 0,
+    mouseGain = 3.6, commandX = nil, commandY = nil, commandAt = 0,
 }
 local aimPointLocal = setmetatable({}, { __mode = "k" })
 local aimPointState = setmetatable({}, { __mode = "k" })
@@ -1831,18 +1832,20 @@ local getGunAimState = function() return nil end
 local aimWhitelist = {}  -- [UserId] = true; aim ignores these players
 local WHITELIST_FILE = "hako/aim_whitelist.json"
 local AIM_TRACE_FILE = "hako/aim_trace.json"
+local AIM_TRACE_FULL_FILE = "hako/aim_trace_full.ndjson"
 local aimTrace = {
     active = false, events = {}, startedAt = 0, lastFlush = 0,
     lastTarget = "", lastPart = "", lastVisible = nil,
     lastSample = 0, lastMoveX = 0, lastMoveY = 0,
+    fullPending = {}, lastFullFlush = 0, frame = 0, previousLook = nil,
 }
 
-local function aimTracePing()
+aimTrace.ping = function()
     local ok, value = pcall(function() return player:GetNetworkPing() * 1000 end)
     return ok and math.floor(value + 0.5) or -1
 end
 
-local function saveAimTrace()
+aimTrace.save = function()
     if not writefile then return false end
     pcall(function() if makefolder then makefolder("hako") end end)
     local ok = pcall(writefile, AIM_TRACE_FILE, HttpService:JSONEncode({
@@ -1855,42 +1858,61 @@ local function saveAimTrace()
     return ok
 end
 
-local function addAimTrace(kind, data)
+aimTrace.flushFull = function()
+    if not appendfile or #aimTrace.fullPending == 0 then return false end
+    local lines = table.create(#aimTrace.fullPending)
+    for i, event in ipairs(aimTrace.fullPending) do
+        lines[i] = HttpService:JSONEncode(event)
+    end
+    local ok = pcall(appendfile, AIM_TRACE_FULL_FILE, table.concat(lines, "\n") .. "\n")
+    if ok then
+        table.clear(aimTrace.fullPending)
+        aimTrace.lastFullFlush = os.clock()
+    end
+    return ok
+end
+
+aimTrace.add = function(kind, data)
     if not aimTrace.active then return end
     data = data or {}
     data.kind = kind
     data.t = math.floor((os.clock() - aimTrace.startedAt) * 1000 + 0.5) / 1000
-    data.ping = aimTracePing()
+    data.ping = aimTrace.ping()
     data.style = tostring(cfg.AimStyle or "Legit")
     local events = aimTrace.events
     events[#events + 1] = data
     if #events > 12000 then table.remove(events, 1) end
-    if os.clock() - aimTrace.lastFlush >= 5 then saveAimTrace() end
+    if os.clock() - aimTrace.lastFlush >= 5 then aimTrace.save() end
 end
 
-local function startAimTrace()
+aimTrace.start = function()
     table.clear(aimTrace.events)
     aimTrace.active = true
     aimTrace.startedAt = os.clock()
     aimTrace.lastFlush = 0
     aimTrace.lastTarget, aimTrace.lastPart, aimTrace.lastVisible = "", "", nil
     aimTrace.lastSample, aimTrace.lastMoveX, aimTrace.lastMoveY = 0, 0, 0
-    addAimTrace("trace_started", {})
+    table.clear(aimTrace.fullPending)
+    aimTrace.lastFullFlush, aimTrace.frame, aimTrace.previousLook = 0, 0, nil
+    pcall(writefile, AIM_TRACE_FULL_FILE, "")
+    aimTrace.add("trace_started", {})
     return true
 end
 
-local function stopAimTrace()
-    if aimTrace.active then addAimTrace("trace_stopped", {}) end
+aimTrace.stop = function()
+    if aimTrace.active then aimTrace.add("trace_stopped", {}) end
+    aimTrace.flushFull()
     aimTrace.active = false
-    return saveAimTrace()
+    return aimTrace.save()
 end
 
 if getgenv then
     getgenv().__HAKO_AIM_TRACE = {
-        Start = startAimTrace,
-        Stop = stopAimTrace,
-        Save = saveAimTrace,
-        Status = function() return { active = aimTrace.active, count = #aimTrace.events, file = AIM_TRACE_FILE } end,
+        Start = aimTrace.start,
+        Stop = aimTrace.stop,
+        Save = aimTrace.save,
+        Status = function() return { active = aimTrace.active, count = #aimTrace.events, file = AIM_TRACE_FILE,
+            fullFile = AIM_TRACE_FULL_FILE, pendingFrames = #aimTrace.fullPending, frames = aimTrace.frame } end,
         Get = function() return aimTrace.events end,
     }
 end
@@ -2453,7 +2475,7 @@ local function whitelistNearestPlayer()
     end
 end
 
-local function traceAimTargetState(cam, myRoot)
+aimTrace.targetState = function(cam, myRoot)
     if not aimTrace.active then return end
     local model = aimTarget and aimTarget:FindFirstAncestorOfClass("Model")
     local modelName = model and model.Name or ""
@@ -2462,7 +2484,7 @@ local function traceAimTargetState(cam, myRoot)
         or aimTargetVisible ~= aimTrace.lastVisible then
         local distance = -1
         if aimTarget and myRoot then distance = math.floor((aimTarget.Position - myRoot.Position).Magnitude + 0.5) end
-        addAimTrace("target_state", {
+        aimTrace.add("target_state", {
             target = modelName, part = partName, visible = aimTargetVisible == true,
             distance = distance,
         })
@@ -2470,7 +2492,7 @@ local function traceAimTargetState(cam, myRoot)
     end
 end
 
-local function traceAimMovement(dx, dy, cam, myRoot)
+aimTrace.movement = function(dx, dy, cam, myRoot)
     if not aimTrace.active then return end
     local now = os.clock()
     local magnitude = math.sqrt(dx * dx + dy * dy)
@@ -2481,7 +2503,7 @@ local function traceAimMovement(dx, dy, cam, myRoot)
         local model = aimTarget and aimTarget:FindFirstAncestorOfClass("Model")
         local point = aimTarget and currentAimPoint(aimTarget)
         local distance = point and myRoot and (point - myRoot.Position).Magnitude or -1
-        addAimTrace(flipped and "direction_flip" or "movement", {
+        aimTrace.add(flipped and "direction_flip" or "movement", {
             target = model and model.Name or "",
             part = aimTarget and aimTarget.Name or "",
             visible = aimTargetVisible == true,
@@ -2497,10 +2519,61 @@ local function traceAimMovement(dx, dy, cam, myRoot)
     aimTrace.lastMoveX, aimTrace.lastMoveY = dx, dy
 end
 
-local function resetAimServo()
+aimTrace.recordFrame = function(stage, cam, myRoot, dx, dy, commandX, commandY, gunState)
+    if not aimTrace.active then return end
+    aimTrace.frame = aimTrace.frame + 1
+    local look = cam.CFrame.LookVector
+    local cameraDelta = 0
+    if aimTrace.previousLook then
+        cameraDelta = math.deg(math.acos(math.clamp(aimTrace.previousLook:Dot(look), -1, 1)))
+    end
+    aimTrace.previousLook = look
+    local model = aimTarget and aimTarget:FindFirstAncestorOfClass("Model")
+    local point = aimTarget and currentAimPoint(aimTarget)
+    local velocity = aimTarget and aimTarget.AssemblyLinearVelocity or Vector3.zero
+    local distance = point and myRoot and (point - myRoot.Position).Magnitude or -1
+    local tool = gunState and gunState.tool
+    local event = {
+        frame = aimTrace.frame,
+        t = math.floor((os.clock() - aimTrace.startedAt) * 1000 + 0.5) / 1000,
+        stage = stage,
+        ping = aimTrace.ping(),
+        style = tostring(cfg.AimStyle or "Legit"),
+        holding = aimHolding == true,
+        target = model and model.Name or "",
+        part = aimTarget and aimTarget.Name or "",
+        visible = aimTargetVisible == true,
+        dx = dx and math.floor(dx * 100 + 0.5) / 100 or nil,
+        dy = dy and math.floor(dy * 100 + 0.5) / 100 or nil,
+        commandX = commandX and math.floor(commandX * 100 + 0.5) / 100 or nil,
+        commandY = commandY and math.floor(commandY * 100 + 0.5) / 100 or nil,
+        fov = math.floor(cam.FieldOfView * 100 + 0.5) / 100,
+        ads = gunState and gunState.ads == true or false,
+        weapon = tool and tool.Name or "",
+        damping = math.floor(aimServo.damping * 1000 + 0.5) / 1000,
+        mouseGain = math.floor(aimServo.mouseGain * 1000 + 0.5) / 1000,
+        cameraDelta = math.floor(cameraDelta * 10000 + 0.5) / 10000,
+        cameraX = math.floor(look.X * 100000 + 0.5) / 100000,
+        cameraY = math.floor(look.Y * 100000 + 0.5) / 100000,
+        cameraZ = math.floor(look.Z * 100000 + 0.5) / 100000,
+        distance = math.floor(distance * 10 + 0.5) / 10,
+        pointX = point and math.floor(point.X * 100 + 0.5) / 100 or nil,
+        pointY = point and math.floor(point.Y * 100 + 0.5) / 100 or nil,
+        pointZ = point and math.floor(point.Z * 100 + 0.5) / 100 or nil,
+        velocityX = math.floor(velocity.X * 100 + 0.5) / 100,
+        velocityY = math.floor(velocity.Y * 100 + 0.5) / 100,
+        velocityZ = math.floor(velocity.Z * 100 + 0.5) / 100,
+    }
+    aimTrace.fullPending[#aimTrace.fullPending + 1] = event
+    if os.clock() - aimTrace.lastFullFlush >= 0.5 then aimTrace.flushFull() end
+end
+
+aimServo.reset = function()
     aimServo.model, aimServo.part = nil, nil
     aimServo.prevDx, aimServo.prevDy = nil, nil
     aimServo.damping, aimServo.brakeUntil, aimServo.stableFrames = 1, 0, 0
+    aimServo.mouseGain = 3.6
+    aimServo.commandX, aimServo.commandY, aimServo.commandAt = nil, nil, 0
 end
 
 local function updateAim(dt, cam, vpSize, myRoot)
@@ -2518,7 +2591,7 @@ local function updateAim(dt, cam, vpSize, myRoot)
         aimTargetVisible = true
         aimLockedModel = nil
         aimLockedAt = 0
-        resetAimServo()
+        aimServo.reset()
         return
     end
     if not mousemoverel then
@@ -2526,6 +2599,7 @@ local function updateAim(dt, cam, vpSize, myRoot)
             aimMouseWarningShown = true
             if Window then pcall(function() Window:Notify({ Title = "Прицел", Description = "Исполнитель не поддерживает mousemoverel", Lifetime = 5 }) end) end
         end
+        aimTrace.recordFrame("no_mousemoverel", cam, myRoot, nil, nil, nil, nil, getGunAimState())
         return
     end
     if not myRoot then
@@ -2534,7 +2608,8 @@ local function updateAim(dt, cam, vpSize, myRoot)
         aimTargetVisible = true
         aimLockedModel = nil
         aimLockedAt = 0
-        resetAimServo()
+        aimServo.reset()
+        aimTrace.recordFrame("no_character_root", cam, myRoot, nil, nil, nil, nil, getGunAimState())
         return
     end
 
@@ -2550,29 +2625,45 @@ local function updateAim(dt, cam, vpSize, myRoot)
         aimOccludedAt = nil
     end
 
-    traceAimTargetState(cam, myRoot)
-    if not aimTarget or not aimTarget.Parent then return end
-    if cfg.AimLosCheck and not aimTargetVisible then return end
+    aimTrace.targetState(cam, myRoot)
+    if not aimTarget or not aimTarget.Parent then
+        aimServo.reset()
+        aimTrace.recordFrame("no_target", cam, myRoot, nil, nil, nil, nil, getGunAimState())
+        return
+    end
+    if cfg.AimLosCheck and not aimTargetVisible then
+        aimServo.commandX, aimServo.commandY = nil, nil
+        aimTrace.recordFrame("occluded", cam, myRoot, nil, nil, nil, nil, getGunAimState())
+        return
+    end
 
     -- Don't fight the menu cursor
     local menuOpen = false
     pcall(function() menuOpen = (Window and Window:GetState()) == true end)
-    if menuOpen then return end
+    if menuOpen then
+        aimServo.commandX, aimServo.commandY = nil, nil
+        aimTrace.recordFrame("menu_open", cam, myRoot, nil, nil, nil, nil, getGunAimState())
+        return
+    end
 
     -- Move the mouse toward the target. The game uses a Scriptable camera, so
     -- writing Camera.CFrame gets overwritten — instead we nudge the OS mouse and
     -- let the game's own camera turn. Closed loop: each frame we re-measure the
     -- gap and cover a fraction of it, so it converges regardless of sensitivity.
     local screen, onScreen = cam:WorldToViewportPoint(currentAimPoint(aimTarget))
-    if not onScreen then return end
+    if not onScreen then
+        aimServo.commandX, aimServo.commandY = nil, nil
+        aimTrace.recordFrame("offscreen", cam, myRoot, nil, nil, nil, nil, getGunAimState())
+        return
+    end
     local dx = screen.X - vpSize.X / 2
     local dy = screen.Y - vpSize.Y / 2
-    traceAimMovement(dx, dy, cam, myRoot)
+    aimTrace.movement(dx, dy, cam, myRoot)
     local gunState = getGunAimState()
     local tuning = aimStyle()
     local targetModel = aimTarget:FindFirstAncestorOfClass("Model")
     if aimServo.model ~= targetModel or aimServo.part ~= aimTarget then
-        resetAimServo()
+        aimServo.reset()
         aimServo.model, aimServo.part = targetModel, aimTarget
     end
 
@@ -2585,6 +2676,19 @@ local function updateAim(dt, cam, vpSize, myRoot)
     local now = os.clock()
     local magnitude = math.sqrt(dx * dx + dy * dy)
     local previousMagnitude = aimServo.prevDx and math.sqrt(aimServo.prevDx ^ 2 + aimServo.prevDy ^ 2) or 0
+    -- Calibrate executor mouse units against actual screen-pixel response. The
+    -- trace showed ~3.6 pixels per mouse unit in ADS, while the old controller
+    -- assumed 1:1 and therefore overshot by more than 2x in Super Rage.
+    if aimServo.commandX and aimServo.prevDx and now - aimServo.commandAt <= 0.05 then
+        local commandSq = aimServo.commandX ^ 2 + aimServo.commandY ^ 2
+        if commandSq >= 0.5 then
+            local observedGain = ((aimServo.prevDx - dx) * aimServo.commandX
+                + (aimServo.prevDy - dy) * aimServo.commandY) / commandSq
+            if observedGain >= 0.25 and observedGain <= 12 then
+                aimServo.mouseGain = aimServo.mouseGain * 0.82 + math.clamp(observedGain, 0.75, 8) * 0.18
+            end
+        end
+    end
     local crossed = aimServo.prevDx ~= nil and magnitude > 1.5 and previousMagnitude > 1.5
         and (dx * aimServo.prevDx + dy * aimServo.prevDy) < 0
     if crossed then
@@ -2593,7 +2697,7 @@ local function updateAim(dt, cam, vpSize, myRoot)
         aimServo.brakeUntil = now + (zoomed and 0.05 or 0.032)
         aimServo.stableFrames = 0
         if aimTrace.active then
-            addAimTrace("overshoot_brake", {
+            aimTrace.add("overshoot_brake", {
                 target = targetModel and targetModel.Name or "",
                 part = aimTarget.Name,
                 dx = math.floor(dx * 10 + 0.5) / 10,
@@ -2603,7 +2707,7 @@ local function updateAim(dt, cam, vpSize, myRoot)
                 fov = math.floor(cam.FieldOfView * 10 + 0.5) / 10,
                 damping = aimServo.damping,
             })
-            saveAimTrace()
+            aimTrace.save()
         end
     elseif now >= aimServo.brakeUntil and aimServo.prevDx ~= nil and magnitude <= previousMagnitude * 1.08 then
         aimServo.stableFrames = aimServo.stableFrames + 1
@@ -2614,13 +2718,21 @@ local function updateAim(dt, cam, vpSize, myRoot)
         aimServo.stableFrames = 0
     end
     aimServo.prevDx, aimServo.prevDy = dx, dy
-    if now < aimServo.brakeUntil then return end
+    if now < aimServo.brakeUntil then
+        aimServo.commandX, aimServo.commandY = nil, nil
+        aimTrace.recordFrame("overshoot_brake", cam, myRoot, dx, dy, 0, 0, gunState)
+        return
+    end
 
     local deadzone = tuning.deadzone
     if cfg.AimTargetPart == "Smart" and gunState and not gunState.sniper then
         deadzone = deadzone + gunState.heat * tuning.spreadDeadzone
     end
-    if math.sqrt(dx * dx + dy * dy) <= deadzone then return end
+    if math.sqrt(dx * dx + dy * dy) <= deadzone then
+        aimServo.commandX, aimServo.commandY = nil, nil
+        aimTrace.recordFrame("deadzone", cam, myRoot, dx, dy, 0, 0, gunState)
+        return
+    end
     -- Frame-rate independent: alpha is the fraction of the gap to cover this
     -- frame, normalised by dt so "Smoothness" feels the same at 30 or 144 FPS.
     local rate = 60 / math.max(tuning.smoothness, 1)
@@ -2631,12 +2743,16 @@ local function updateAim(dt, cam, vpSize, myRoot)
         maxStep = math.min(maxStep * (1 + strength * 0.7), 120)
     end
     local alpha = 1 - math.exp(-(dt or 0.016) * rate)
-    local moveX, moveY = dx * alpha * aimServo.damping, dy * alpha * aimServo.damping
+    local calibratedGain = math.max(aimServo.mouseGain, 0.75)
+    local moveX = dx * alpha * aimServo.damping / calibratedGain
+    local moveY = dy * alpha * aimServo.damping / calibratedGain
     local moveMagnitude = math.sqrt(moveX * moveX + moveY * moveY)
     if moveMagnitude > maxStep and moveMagnitude > 0 then
         local scale = maxStep / moveMagnitude
         moveX, moveY = moveX * scale, moveY * scale
     end
+    aimTrace.recordFrame("command", cam, myRoot, dx, dy, moveX, moveY, gunState)
+    aimServo.commandX, aimServo.commandY, aimServo.commandAt = moveX, moveY, now
     mousemoverel(moveX, moveY)
 end
 
@@ -2922,7 +3038,7 @@ local cleanedUp = false
 local function cleanup(fromWindow)
     if cleanedUp then return end
     cleanedUp = true
-    if aimTrace.active then pcall(stopAimTrace) end
+    if aimTrace.active then pcall(aimTrace.stop) end
     pcall(restoreMenuMouse)
     unbindAim()
     stopRender()
