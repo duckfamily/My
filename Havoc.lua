@@ -355,7 +355,7 @@ local conns = {}
 -- BillboardGui-based ESP (Highlight outline + floating labels + gradient HP bar)
 local function createEntry(model, isNpc)
     if cache[model] then return end
-    local d = { isNpc = isNpc, visible = true, visAccum = 0 }
+    local d = { isNpc = isNpc, visible = true, penetrable = false, visAccum = 0 }
 
     -- Highlight: glowing outline (primary) + optional through-wall fill
     d.hl = newInst("Highlight", {
@@ -488,6 +488,8 @@ end
 -- the same geometry for LOS so invisible query parts do not create false cover
 -- and Aim can recognise genuinely penetrable surfaces.
 local rayReachesTarget
+local getGunAimState = function() return nil end
+local equippedMuzzlePosition = function() return nil end
 do
 local penetrationState = { include = RaycastParams.new(), hardness = nil }
 penetrationState.include.FilterType = Enum.RaycastFilterType.Include
@@ -615,6 +617,38 @@ local function computeVisible(model, cam)
     return false
 end
 
+local function partPenetrableAtOffsets(part, cam, offsets, gunState)
+    if not part or not part:IsA("BasePart") then return false end
+    local depth = gunState and tonumber(gunState.penetrationDepth) or 0
+    local budget = gunState and tonumber(gunState.pierceBudget) or 0
+    if depth <= 0 or budget <= 0 then return false end
+    refreshRayFilter()
+    local cameraOrigin = cam.CFrame.Position
+    local muzzleOrigin = equippedMuzzlePosition(player.Character)
+    for _, offset in ipairs(offsets) do
+        local point = part.CFrame:PointToWorldSpace(Vector3.new(
+            offset.X * part.Size.X,
+            offset.Y * part.Size.Y,
+            offset.Z * part.Size.Z
+        ))
+        local cameraPath = rayReachesTarget(cameraOrigin, point, part, rayParams, true, depth, budget)
+        local muzzlePath = not muzzleOrigin
+            or rayReachesTarget(muzzleOrigin, point, part, rayParams, true, depth, budget)
+        if cameraPath and muzzlePath then return true end
+    end
+    return false
+end
+
+local function computePenetrable(model, cam)
+    local gunState = getGunAimState()
+    if not gunState then return false end
+    local head = model:FindFirstChild("Head")
+    if partPenetrableAtOffsets(head, cam, ESP_VIS_POINTS.Head, gunState) then return true end
+    local torso = model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso")
+        or model:FindFirstChild("HumanoidRootPart")
+    return partPenetrableAtOffsets(torso, cam, ESP_VIS_POINTS.Torso, gunState)
+end
+
 local function equipmentText(model)
     local gear, seen = {}, {}
     local function add(value)
@@ -716,8 +750,10 @@ local function drawEntity(model, d, myRoot, cam, vpSize, dt)
         if d.visAccum >= 0.08 then
             d.visAccum = 0
             d.visible = computeVisible(model, cam)
+            d.penetrable = not d.visible and computePenetrable(model, cam) or false
         end
-        col = d.visible and cfg.VisibleColor or cfg.HiddenColor
+        col = d.visible and cfg.VisibleColor
+            or (d.penetrable and cfg.PenetrableColor or cfg.HiddenColor)
     end
 
     -- Highlight: outline (primary) + optional fill
@@ -1820,6 +1856,7 @@ local aimServo = {
     model = nil, part = nil, prevDx = nil, prevDy = nil,
     damping = 1, brakeUntil = 0, stableFrames = 0,
     mouseGain = 3.6, commandX = nil, commandY = nil, commandAt = 0,
+    residualX = 0, residualY = 0,
 }
 local aimPointLocal = setmetatable({}, { __mode = "k" })
 local aimPointState = setmetatable({}, { __mode = "k" })
@@ -1828,7 +1865,6 @@ local aimPartState = setmetatable({}, { __mode = "k" })
 local gunProfileCache = setmetatable({}, { __mode = "k" })
 local gunRuntimeCache = setmetatable({}, { __mode = "k" })
 local muzzleObjectCache = setmetatable({}, { __mode = "k" })
-local getGunAimState = function() return nil end
 local aimWhitelist = {}  -- [UserId] = true; aim ignores these players
 local WHITELIST_FILE = "hako/aim_whitelist.json"
 local AIM_TRACE_FILE = "hako/aim_trace.json"
@@ -1958,7 +1994,7 @@ local function aimStyle()
     return AIM_STYLE[cfg.AimStyle] or AIM_STYLE.Legit
 end
 
-local function equippedMuzzlePosition(character)
+equippedMuzzlePosition = function(character)
     local tool = character and character:FindFirstChildWhichIsA("Tool")
     if not tool or tool:GetAttribute("Gun") ~= true then return nil end
     local muzzle = muzzleObjectCache[tool]
@@ -2574,6 +2610,7 @@ aimServo.reset = function()
     aimServo.damping, aimServo.brakeUntil, aimServo.stableFrames = 1, 0, 0
     aimServo.mouseGain = 3.6
     aimServo.commandX, aimServo.commandY, aimServo.commandAt = nil, nil, 0
+    aimServo.residualX, aimServo.residualY = 0, 0
 end
 
 local function updateAim(dt, cam, vpSize, myRoot)
@@ -2720,6 +2757,7 @@ local function updateAim(dt, cam, vpSize, myRoot)
     aimServo.prevDx, aimServo.prevDy = dx, dy
     if now < aimServo.brakeUntil then
         aimServo.commandX, aimServo.commandY = nil, nil
+        aimServo.residualX, aimServo.residualY = 0, 0
         aimTrace.recordFrame("overshoot_brake", cam, myRoot, dx, dy, 0, 0, gunState)
         return
     end
@@ -2730,6 +2768,7 @@ local function updateAim(dt, cam, vpSize, myRoot)
     end
     if math.sqrt(dx * dx + dy * dy) <= deadzone then
         aimServo.commandX, aimServo.commandY = nil, nil
+        aimServo.residualX, aimServo.residualY = 0, 0
         aimTrace.recordFrame("deadzone", cam, myRoot, dx, dy, 0, 0, gunState)
         return
     end
@@ -2751,9 +2790,17 @@ local function updateAim(dt, cam, vpSize, myRoot)
         local scale = maxStep / moveMagnitude
         moveX, moveY = moveX * scale, moveY * scale
     end
-    aimTrace.recordFrame("command", cam, myRoot, dx, dy, moveX, moveY, gunState)
-    aimServo.commandX, aimServo.commandY, aimServo.commandAt = moveX, moveY, now
-    mousemoverel(moveX, moveY)
+    -- Some executors truncate fractional mouse units. Preserve their average
+    -- movement with an error accumulator instead of losing every 0.x command.
+    aimServo.residualX = aimServo.residualX + moveX
+    aimServo.residualY = aimServo.residualY + moveY
+    local sendX = aimServo.residualX >= 0 and math.floor(aimServo.residualX) or math.ceil(aimServo.residualX)
+    local sendY = aimServo.residualY >= 0 and math.floor(aimServo.residualY) or math.ceil(aimServo.residualY)
+    aimServo.residualX = aimServo.residualX - sendX
+    aimServo.residualY = aimServo.residualY - sendY
+    aimTrace.recordFrame("command", cam, myRoot, dx, dy, sendX, sendY, gunState)
+    aimServo.commandX, aimServo.commandY, aimServo.commandAt = sendX, sendY, now
+    if sendX ~= 0 or sendY ~= 0 then mousemoverel(sendX, sendY) end
 end
 
 -- ============================================================
@@ -3177,6 +3224,8 @@ espR:Toggle({ Name = "Затухание по дистанции", Default = gui
 espR:Header({ Name = "Цвета" })
 espR:Colorpicker({ Name = "Видимая цель", Default = guiDefault("VisibleColor", Color3.fromRGB(70, 255, 120)),
     Callback = function(c) cfg.VisibleColor = c end }, "colVisible")
+espR:Colorpicker({ Name = "Простреливаемая цель", Default = guiDefault("PenetrableColor", Color3.fromRGB(45, 235, 220)),
+    Callback = function(c) cfg.PenetrableColor = c end }, "colPenetrable")
 espR:Colorpicker({ Name = "Цель за стеной", Default = guiDefault("HiddenColor", Color3.fromRGB(255, 55, 55)),
     Callback = function(c) cfg.HiddenColor = c end }, "colHidden")
 espR:Colorpicker({ Name = "NPC", Default = guiDefault("NpcColor", Color3.fromRGB(255, 150, 50)),
