@@ -8,10 +8,10 @@
 
     Safety:
       * Visuals live in gethui(), never under workspace / the enemy character.
-      * Regular Aim uses no hooks. Optional Silent Aim patches the game's
-        Network.FireServer method only while its toggle is enabled (high risk).
+      * Regular Aim uses no hooks. Optional Silent Aim synchronizes the game's
+        Network.FireServer direction with its local FastCast path (high risk).
       * Regular Aim nudges the OS mouse (mousemoverel) and never writes camera.
-        Silent Aim is separate and rewrites only the direction of `fire`.
+        Silent Aim is separate and rewrites the direction of `fire` in both paths.
       * Never touches WalkSpeed / JumpPower / position (server MovementAnticheat).
       * Chams use a Highlight in gethui() adorneed to the target; the character
         itself gets no new instances.
@@ -1870,13 +1870,11 @@ local aimServo = {
 }
 aimServo.silent = {
     installed = false, network = nil, original = nil, wrapper = nil,
+    router = nil, handler = nil, clientEvent = nil,
+    pendingDirection = nil, pendingOrigin = nil, pendingAt = 0,
     wasReadonly = false, lockedModel = nil, lockedPart = nil, lockedAt = 0,
-    redirected = 0, lastTarget = "", lastError = "",
-    styles = {
-        Legit = { chance = 0.82, ads = true, penetration = false, hold = 0.18 },
-        Rage = { chance = 1, ads = false, penetration = true, hold = 0.35 },
-        SuperRage = { chance = 1, ads = false, penetration = true, hold = 0.55 },
-    },
+    redirected = 0, localRedirected = 0, lastTarget = "", lastError = "",
+    hold = 0.45,
 }
 local aimPointLocal = setmetatable({}, { __mode = "k" })
 local aimPointState = setmetatable({}, { __mode = "k" })
@@ -2632,10 +2630,6 @@ end
 -- Silent Aim is intentionally installed only after its toggle is enabled.
 -- Unlike regular Aim this changes the direction passed to the game's own
 -- `fire` network call, so merely loading the script leaves the network intact.
-aimServo.silentStyle = function()
-    return aimServo.silent.styles[cfg.SilentAimStyle] or aimServo.silent.styles.Legit
-end
-
 aimServo.silentPathClear = function(cam, origin, part, point, penetration)
     if not part or not point then return false end
     local allowBodyHit = part.Name ~= "Head"
@@ -2654,13 +2648,10 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
     local character = player.Character
     local myRoot = character and character:FindFirstChild("HumanoidRootPart")
     local gun = getGunAimState()
-    local style = aimServo.silentStyle()
     if not cam or not myRoot or not gun or typeof(origin) ~= "Vector3"
         or typeof(originalDirection) ~= "Vector3" or originalDirection.Magnitude < 0.001 then
         return nil
     end
-    if style.ads and not gun.ads then return nil end
-    if style.chance < 1 and math.random() > style.chance then return nil end
 
     local maxDistance = math.min(cfg.AimMaxDist or 1500, gun.maxDistance or 2000)
     local silentRadius = math.clamp(tonumber(cfg.SilentAimFovPx) or 250, 50, 600)
@@ -2688,7 +2679,7 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
                 -- projectile has an arcing trajectory and would otherwise fail
                 -- every sufficiently long shot.
                 local rawPoint = visibleAimPoint(cam, part)
-                if rawPoint and aimServo.silentPathClear(cam, origin, part, rawPoint, style.penetration) then
+                if rawPoint and aimServo.silentPathClear(cam, origin, part, rawPoint, true) then
                     local screen, onScreen = cam:WorldToViewportPoint(rawPoint)
                     local screenDistance = onScreen
                         and (Vector2.new(screen.X, screen.Y) - screenCenter).Magnitude or math.huge
@@ -2699,7 +2690,7 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
                             local distance = desired.Magnitude
                             local score = aimScore(humanoid, screenDistance, distance)
                             if model == aimServo.silent.lockedModel
-                                and now - aimServo.silent.lockedAt <= style.hold then
+                                and now - aimServo.silent.lockedAt <= aimServo.silent.hold then
                                 -- Do not alternate between two overlapping bots
                                 -- while the retained target is still shootable.
                                 score = -math.huge
@@ -2728,6 +2719,11 @@ end
 
 aimServo.uninstallSilent = function()
     local state = aimServo.silent
+    if state.router and state.router.handler == state.handler then
+        state.router.handler = nil
+    end
+    state.pendingDirection, state.pendingOrigin, state.pendingAt = nil, nil, 0
+    state.handler, state.clientEvent, state.router = nil, nil, nil
     if not state.installed then return true end
     if setreadonly and state.wasReadonly then pcall(setreadonly, state.network, false) end
     local ok, err = pcall(function()
@@ -2764,6 +2760,63 @@ aimServo.installSilent = function()
         return false, state.lastError
     end
 
+    local storage = ReplicatedStorage:FindFirstChild("Storage")
+    local events = storage and storage:FindFirstChild("Events")
+    local clientEvent = events and events:FindFirstChild("client")
+    if not clientEvent or not clientEvent:IsA("BindableEvent") then
+        state.lastError = "локальный канал выстрела Storage.Events.client недоступен"
+        return false, state.lastError
+    end
+
+    local env = getgenv and getgenv()
+    local router = env and env.__HAKO_NAMECALL_ROUTER
+    if type(router) ~= "table" or router.version ~= 1 then
+        if not env or type(hookmetamethod) ~= "function" or type(getnamecallmethod) ~= "function" then
+            state.lastError = "executor не поддерживает синхронизацию локальной пули"
+            return false, state.lastError
+        end
+        router = { version = 1, handler = nil }
+        local oldNamecall
+        local function dispatch(self, ...)
+            local handler = router.handler
+            if handler then
+                local ok, replace, packed, packedCount = pcall(handler, self, getnamecallmethod(), ...)
+                if ok and replace and type(packed) == "table" then
+                    return oldNamecall(self, table.unpack(packed, 1, packedCount))
+                end
+            end
+            return oldNamecall(self, ...)
+        end
+        local closure = newcclosure and newcclosure(dispatch) or dispatch
+        local hookOk, hookResult = pcall(hookmetamethod, game, "__namecall", closure)
+        if not hookOk or type(hookResult) ~= "function" then
+            state.lastError = "не удалось перехватить локальный FastCast: " .. tostring(hookResult)
+            return false, state.lastError
+        end
+        oldNamecall = hookResult
+        router.original = oldNamecall
+        env.__HAKO_NAMECALL_ROUTER = router
+    end
+
+    local localHandler = function(self, method, ...)
+        if self ~= clientEvent or method ~= "Fire" or not state.installed
+            or cfg.SilentAimEnabled ~= true or not state.pendingDirection then
+            return false
+        end
+        local count = select("#", ...)
+        local args = { ... }
+        local fresh = os.clock() - state.pendingAt <= 0.20
+        local matchingOrigin = typeof(args[3]) == "Vector3" and state.pendingOrigin
+            and (args[3] - state.pendingOrigin).Magnitude <= 3
+        if args[1] == "fire" and fresh and matchingOrigin and typeof(args[4]) == "Vector3" then
+            args[4] = state.pendingDirection
+            state.pendingDirection, state.pendingOrigin, state.pendingAt = nil, nil, 0
+            state.localRedirected = state.localRedirected + 1
+            return true, args, count
+        end
+        return false
+    end
+
     local wasReadonly = false
     pcall(function() if isreadonly then wasReadonly = isreadonly(network) end end)
     local wrapper
@@ -2775,12 +2828,13 @@ aimServo.installSilent = function()
             local redirected, targetPart = aimServo.pickSilentDirection(args[2], args[3])
             if redirected then
                 args[3] = redirected
+                state.pendingDirection, state.pendingOrigin = redirected, args[2]
+                state.pendingAt = os.clock()
                 state.redirected = state.redirected + 1
                 if aimTrace.active then
                     aimTrace.add("silent_redirect", {
                         target = state.lastTarget,
                         part = targetPart and targetPart.Name or "",
-                        silentStyle = tostring(cfg.SilentAimStyle or "Legit"),
                     })
                 end
             end
@@ -2800,6 +2854,8 @@ aimServo.installSilent = function()
     end
     state.installed, state.network, state.original = true, network, original
     state.wrapper, state.wasReadonly, state.lastError = wrapper, wasReadonly, ""
+    state.router, state.handler, state.clientEvent = router, localHandler, clientEvent
+    router.handler = localHandler
     return true
 end
 
@@ -3806,16 +3862,11 @@ aimLft:Toggle({ Name = "Включить Silent Aim", Default = guiDefault("Sile
             aimServo.uninstallSilent()
         end
     end }, "silentEnabled")
-guiDefault("SilentAimStyle", "Legit")
-aimLft:Dropdown({ Name = "Режим Silent Aim", Options = { "Legit", "Rage", "Super Rage" },
-    Default = 1, Multi = false, Callback = function(v)
-        cfg.SilentAimStyle = ({["Legit"]="Legit", ["Rage"]="Rage", ["Super Rage"]="SuperRage", ["SuperRage"]="SuperRage"})[v] or "Legit"
-    end }, "silentStyle")
 aimLft:Slider({ Name = "Радиус Silent Aim", Default = guiDefault("SilentAimFovPx", 250),
     Minimum = 50, Maximum = 600, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.SilentAimFovPx = v end }, "silentFovPx")
 aimLft:Label({ Text = "Радиус считается в пикселях от центра экрана." })
-aimLft:Label({ Text = "Legit: только ADS • Rage / Super Rage: без ADS" })
+aimLft:Label({ Text = "Всегда 100% • ADS не требуется • удерживает одну цель" })
 aimLft:Label({ Text = "Подменяет направление fire; гарантий от античита нет." })
 
 aimRgt:Header({ Name = "Выбор цели" })
@@ -3857,7 +3908,7 @@ cfgTab:InsertConfigSection("Left")
 local cfgR = cfgTab:Section({ Side = "Right" })
 cfgR:Header({ Name = "Скрипт" })
 cfgR:Label({ Text = "Визуалы не меняют workspace; гарантии обхода античита нет." })
-cfgR:Label({ Text = "Обычный Aim двигает мышь без remotes. Silent Aim отдельно меняет направление fire." })
+cfgR:Label({ Text = "Обычный Aim двигает мышь. Silent Aim синхронизирует network fire и локальную пулю." })
 cfgR:Divider()
 cfgR:Button({ Name = "Выгрузить скрипт", Callback = function() cleanup() end })
 end
@@ -3869,9 +3920,9 @@ if getgenv then
             return {
                 enabled = cfg.SilentAimEnabled == true,
                 installed = state.installed == true,
-                style = tostring(cfg.SilentAimStyle or "Legit"),
                 fovPx = tonumber(cfg.SilentAimFovPx) or 250,
                 redirected = state.redirected,
+                localRedirected = state.localRedirected,
                 lastTarget = state.lastTarget,
                 lastError = state.lastError,
             }
