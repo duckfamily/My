@@ -443,14 +443,95 @@ local function refreshRayFilter()
     rayParams.FilterDescendantsInstances = _rayFilter
 end
 
+-- The game's projectile handler measures a hit part from the entry point to its
+-- reverse-ray exit and compares that depth with weapon.penetrate_depth. Reuse
+-- the same geometry for LOS so invisible query parts do not create false cover
+-- and Aim can recognise genuinely penetrable surfaces.
+local rayReachesTarget
+do
+local penetrationState = { include = RaycastParams.new(), hardness = nil }
+penetrationState.include.FilterType = Enum.RaycastFilterType.Include
+penetrationState.include.IgnoreWater = true
+pcall(function() penetrationState.include.CollisionGroup = "Raycast" end)
+pcall(function()
+    local storage = ReplicatedStorage:FindFirstChild("Storage")
+    local modules = storage and storage:FindFirstChild("Modules")
+    local source = modules and modules:FindFirstChild("MaterialPenetration")
+    if source and source:IsA("ModuleScript") then penetrationState.hardness = require(source) end
+end)
+
+local function penetrationHardness(material)
+    local module = penetrationState.hardness
+    if not module or type(module.getHardness) ~= "function" then return 0 end
+    local ok, value = pcall(module.getHardness, module, material)
+    return ok and tonumber(value) or 0
+end
+
+local function rayPartDepth(entryPosition, unit, part, material)
+    if not part:IsA("BasePart") then return nil end
+    penetrationState.include.FilterDescendantsInstances = { part }
+    local outside = entryPosition + unit * math.max(part.Size.Magnitude, 0.1)
+    local exitHit = workspace:Raycast(outside, entryPosition - outside, penetrationState.include)
+    if not exitHit then return nil end
+    return (entryPosition - exitHit.Position).Magnitude + penetrationHardness(material), exitHit.Position
+end
+
+local function isDoorPart(part)
+    local buildings = workspace:FindFirstChild("Buildings")
+    local loots = buildings and buildings:FindFirstChild("Loots")
+    local doors = loots and loots:FindFirstChild("Doors")
+    return doors ~= nil and part:IsDescendantOf(doors)
+end
+
+local function isVisualNoise(part, material)
+    if part:IsA("BasePart") and part.Transparency >= 0.95 then return true end
+    if material == Enum.Material.Glass or material == Enum.Material.ForceField then return true end
+    local buildings = workspace:FindFirstChild("Buildings")
+    local glass = buildings and buildings:FindFirstChild("Glass")
+    return glass ~= nil and part:IsDescendantOf(glass)
+end
+
+rayReachesTarget = function(origin, targetPosition, targetPart, params, allowBodyHit, penetrationDepth, totalPierceBudget)
+    local fullDirection = targetPosition - origin
+    local fullDistance = fullDirection.Magnitude
+    if fullDistance < 0.001 then return false end
+    local unit = fullDirection.Unit
+    local cursor = origin
+    local surfaceLimit = math.max(tonumber(penetrationDepth) or 0, 0)
+    local totalLimit = math.max(tonumber(totalPierceBudget) or 0, 0)
+    local spent = 0
+
+    for _ = 1, 6 do
+        local remaining = targetPosition - cursor
+        if remaining:Dot(unit) <= 0 then return true end
+        local result = workspace:Raycast(cursor, remaining, params)
+        -- Non-queryable character parts cannot be returned by Raycast. No hit
+        -- before their requested point therefore means the path itself is open.
+        if not result or not result.Instance then return true end
+        local hit = result.Instance
+        if hit == targetPart or (allowBodyHit and hit:IsDescendantOf(targetPart.Parent)) then return true end
+        if hit == workspace.Terrain or not hit:IsA("BasePart") then return false end
+
+        local noise = isVisualNoise(hit, result.Material)
+        local depth, exitPosition = rayPartDepth(result.Position, unit, hit, result.Material)
+        if not depth or not exitPosition then return false end
+        if not noise then
+            if surfaceLimit <= 0 or isDoorPart(hit) or depth > surfaceLimit or spent >= totalLimit then
+                return false
+            end
+            spent = spent + math.max(depth, 0)
+        end
+        cursor = exitPosition + unit * 0.02
+    end
+    return false
+end
+end
+
 local function hasLineOfSight(cam, targetPart, targetPosition)
-    if not targetPart:IsA("BasePart") or not targetPart.CanQuery then return false end
+    if not targetPart:IsA("BasePart") then return false end
     refreshRayFilter()
     local origin = cam.CFrame.Position
-    local result = workspace:Raycast(origin, (targetPosition or targetPart.Position) - origin, rayParams)
-    -- Require this exact body part. Hitting a weapon, accessory or another limb
-    -- must not paint a covered head/torso as visible.
-    return result ~= nil and result.Instance == targetPart
+    return rayReachesTarget(origin, targetPosition or targetPart.Position, targetPart, rayParams, true, 0, 0)
 end
 
 local ESP_VIS_POINTS = {
@@ -1698,6 +1779,8 @@ local aimMouseWarningShown = false
 local smartHeadBlockedAt = setmetatable({}, { __mode = "k" })
 local aimPointLocal = setmetatable({}, { __mode = "k" })
 local gunProfileCache = setmetatable({}, { __mode = "k" })
+local gunRuntimeCache = setmetatable({}, { __mode = "k" })
+local muzzleObjectCache = setmetatable({}, { __mode = "k" })
 local getGunAimState = function() return nil end
 local aimWhitelist = {}  -- [UserId] = true; aim ignores these players
 local WHITELIST_FILE = "hako/aim_whitelist.json"
@@ -1743,41 +1826,50 @@ end
 local function equippedMuzzlePosition(character)
     local tool = character and character:FindFirstChildWhichIsA("Tool")
     if not tool or tool:GetAttribute("Gun") ~= true then return nil end
-    local model = tool:FindFirstChild("_mod")
-    local handle = (model and model:FindFirstChild("Handle", true)) or tool:FindFirstChild("Handle", true)
-    local muzzle = (handle and handle:FindFirstChild("MuzzleFX", true)) or tool:FindFirstChild("MuzzleFX", true)
-    if muzzle and not (muzzle:IsA("Attachment") or muzzle:IsA("BasePart")) then
-        muzzle = muzzle:FindFirstChildWhichIsA("Attachment", true)
-            or muzzle:FindFirstChildWhichIsA("BasePart", true)
+    local muzzle = muzzleObjectCache[tool]
+    if not muzzle or not muzzle.Parent or not muzzle:IsDescendantOf(tool) then
+        local model = tool:FindFirstChild("_mod")
+        local handle = (model and model:FindFirstChild("Handle", true)) or tool:FindFirstChild("Handle", true)
+        muzzle = (handle and handle:FindFirstChild("MuzzleFX", true)) or tool:FindFirstChild("MuzzleFX", true)
+        if muzzle and not (muzzle:IsA("Attachment") or muzzle:IsA("BasePart")) then
+            muzzle = muzzle:FindFirstChildWhichIsA("Attachment", true)
+                or muzzle:FindFirstChildWhichIsA("BasePart", true)
+        end
+        if muzzle then muzzleObjectCache[tool] = muzzle end
     end
     if muzzle and muzzle:IsA("Attachment") then return muzzle.WorldPosition end
     if muzzle and muzzle:IsA("BasePart") then return muzzle.Position end
     return nil
 end
 
-local function rayReachesAimPart(origin, targetPart, targetPosition, filter, allowBodyHit)
-    local direction = targetPosition - origin
-    if direction.Magnitude < 0.001 then return false end
-    aimRayParams.FilterDescendantsInstances = filter
-    local result = workspace:Raycast(origin, direction, aimRayParams)
-    if not result or not result.Instance then return false end
-    if result.Instance == targetPart then return true end
-    -- From the offset muzzle, a ray aimed at the head can naturally touch the
-    -- torso first. That is still a clear shot; accessories and outside cover do
-    -- not qualify because only direct body parts of this character are accepted.
-    return allowBodyHit == true and result.Instance.Parent == targetPart.Parent
-end
-
-local function hasAimLineOfSight(cam, targetPart, targetPosition)
-    if not targetPart.CanQuery then return false end
-    local filter = {}
+local aimFilterState = { stamp = -1, values = {} }
+local function currentAimFilter(cam)
+    local stamp = workspace.DistributedGameTime
+    if stamp == aimFilterState.stamp then return aimFilterState.values end
+    aimFilterState.stamp = stamp
+    local filter = aimFilterState.values
+    table.clear(filter)
     local character = player.Character
     if character then filter[#filter + 1] = character end
     filter[#filter + 1] = cam
     local ignored = workspace:FindFirstChild("Ignored")
     if ignored then filter[#filter + 1] = ignored end
+    return filter
+end
+
+local function rayReachesAimPart(origin, targetPart, targetPosition, filter, allowBodyHit)
+    aimRayParams.FilterDescendantsInstances = filter
+    local gunState = getGunAimState()
+    local penetrationDepth = gunState and gunState.penetrationDepth or 0
+    local pierceBudget = gunState and gunState.pierceBudget or 0
+    return rayReachesTarget(origin, targetPosition, targetPart, aimRayParams, allowBodyHit, penetrationDepth, pierceBudget)
+end
+
+local function hasAimLineOfSight(cam, targetPart, targetPosition)
+    local character = player.Character
+    local filter = currentAimFilter(cam)
     targetPosition = targetPosition or targetPart.Position
-    if not rayReachesAimPart(cam.CFrame.Position, targetPart, targetPosition, filter) then
+    if not rayReachesAimPart(cam.CFrame.Position, targetPart, targetPosition, filter, true) then
         return false
     end
 
@@ -1858,23 +1950,42 @@ local function aimParts(model)
     return result
 end
 
-local function resolveAimPart(model, cam)
+local function aimPartWithinRadius(cam, part, center, radius)
+    if not center or not radius then return true end
+    local screen, onScreen = cam:WorldToViewportPoint(currentAimPoint(part))
+    if not onScreen then return false end
+    return (Vector2.new(screen.X, screen.Y) - center).Magnitude < radius
+end
+
+local function resolveAimPart(model, cam, center, radius)
     local parts = aimParts(model)
     if cfg.AimTargetPart == "Smart" and parts[1] and parts[1].Name == "Head" then
         local head = parts[1]
-        if canAimAtPart(cam, head) then
+        local headVisible = canAimAtPart(cam, head)
+        if headVisible and aimPartWithinRadius(cam, head, center, radius) then
             smartHeadBlockedAt[model] = nil
             return head
         end
-        smartHeadBlockedAt[model] = smartHeadBlockedAt[model] or os.clock()
-        if os.clock() - smartHeadBlockedAt[model] < 0.18 then return nil end
+        -- Grace is useful only when an already locked head disappears for one
+        -- noisy raycast frame. On first acquisition it merely creates a visible
+        -- delay before Smart falls back to an exposed torso.
+        local wasLockedOnHead = aimLockedModel == model and aimTarget
+            and aimTarget.Parent == model and aimTarget.Name == "Head"
+        if not headVisible and wasLockedOnHead then
+            smartHeadBlockedAt[model] = smartHeadBlockedAt[model] or os.clock()
+            if os.clock() - smartHeadBlockedAt[model] < 0.12 then return nil end
+        else
+            smartHeadBlockedAt[model] = nil
+        end
         for i = 2, #parts do
-            if canAimAtPart(cam, parts[i]) then return parts[i] end
+            if canAimAtPart(cam, parts[i]) and aimPartWithinRadius(cam, parts[i], center, radius) then
+                return parts[i]
+            end
         end
         return nil
     end
     for _, part in ipairs(parts) do
-        if canAimAtPart(cam, part) then return part end
+        if canAimAtPart(cam, part) and aimPartWithinRadius(cam, part, center, radius) then return part end
     end
     return nil
 end
@@ -1912,17 +2023,10 @@ local function pickAimTarget(cam, vpSize, myRoot)
                 local anchor = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
                 if not anchor or (anchor.Position - myRoot.Position).Magnitude > cfg.AimMaxDist then
                     skip = true
-                else
-                    local _, coarseOnScreen = cam:WorldToViewportPoint(anchor.Position)
-                    -- Do not compare the root-part screen distance here. With a
-                    -- high-magnification scope the crosshair can be on the head
-                    -- while HumanoidRootPart is hundreds of pixels lower. The
-                    -- exact selected point is checked against FOV below.
-                    if not coarseOnScreen then skip = true end
                 end
             end
             if not skip then
-                local part = resolveAimPart(model, cam)
+                local part = resolveAimPart(model, cam, center, cfg.AimFov)
                 if not part then skip = true end
                 if not skip then
                     local d3 = (part.Position - myRoot.Position).Magnitude
@@ -1960,7 +2064,7 @@ local function pickAimTarget(cam, vpSize, myRoot)
     -- Prevent frame-to-frame ping-pong when two targets overlap. Keep the
     -- current model for a short minimum time and afterwards switch only when
     -- the replacement is meaningfully better, not one or two pixels better.
-    if lockedCandidate then
+    if cfg.AimRetention ~= "Off" and lockedCandidate then
         local tuning = aimStyle()
         local youngLock = os.clock() - aimLockedAt < tuning.targetHold
         local closeEnough = not chosen
@@ -1991,7 +2095,13 @@ local function isTargetStillValid(cam, myRoot)
     local d3 = (aimTarget.Position - myRoot.Position).Magnitude
     if d3 > cfg.AimMaxDist then return false end
 
-    local visiblePart = resolveAimPart(model, cam)
+    local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
+    local breakMultiplier = cfg.AimRetention == "Hard" and 1.75 or 1.25
+    local gunState = getGunAimState()
+    if cfg.AimTargetPart == "Smart" and gunState and gunState.recovering then
+        breakMultiplier = breakMultiplier + 0.5 * gunState.recoilFactor
+    end
+    local visiblePart = resolveAimPart(model, cam, center, cfg.AimFov * breakMultiplier)
     if visiblePart then
         aimTarget = visiblePart
         aimTargetVisible = true
@@ -2005,13 +2115,7 @@ local function isTargetStillValid(cam, myRoot)
 
     local screen, onScreen = cam:WorldToViewportPoint(currentAimPoint(aimTarget))
     if not onScreen then return false end
-    local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
     local screenDistance = (Vector2.new(screen.X, screen.Y) - center).Magnitude
-    local breakMultiplier = cfg.AimRetention == "Hard" and 1.75 or 1.25
-    local gunState = getGunAimState()
-    if cfg.AimTargetPart == "Smart" and gunState and gunState.recovering then
-        breakMultiplier = breakMultiplier + 0.5 * gunState.recoilFactor
-    end
     if screenDistance > cfg.AimFov * breakMultiplier then return false end
     return true
 end
@@ -2031,7 +2135,7 @@ local function automaticGunProfile(tool)
     local storage = ReplicatedStorage:FindFirstChild("Storage")
     local modules = storage and storage:FindFirstChild("Modules")
     local weapons = modules and modules:FindFirstChild("Weapons")
-    local configModule = weapons and weapons:FindFirstChild(tool.Name)
+    local configModule = weapons and weapons:FindFirstChild(tool.Name, true)
     if not configModule or not configModule:IsA("ModuleScript") then return nil end
 
     local cached = gunProfileCache[configModule]
@@ -2048,11 +2152,15 @@ local function automaticGunProfile(tool)
     local maxPower = tonumber(recoil.maxRecoilPower) or minPower
     local punch = tonumber(recoil.recoilPunch) or 0
     local fireRate = tonumber(data.rate) or tonumber(tool:GetAttribute("FireRate")) or 600
+    local damage = type(data.damage) == "table" and data.damage or {}
     local profile = {
         fireRate = math.max(fireRate, 1),
         recoveryTime = math.clamp(math.max(tonumber(recoil.punchRecover) or 0.15, 60 / math.max(fireRate, 1) * 1.35), 0.08, 0.55),
         recoilFactor = math.clamp(((minPower + maxPower) * 0.5) / 4 + punch * 0.65, 0.35, 2.5),
         aimRecoilReduction = math.max(tonumber(recoil.aimRecoilReduction) or 1, 1),
+        penetrationDepth = math.max(tonumber(data.penetrate_depth) or 0, 0),
+        pierceBudget = math.max(tonumber(damage[2] or damage[1]) or 0, 0) / 20,
+        sniper = data.sniper == true,
         shotgun = data.shotgun == true or (tonumber(data.amountPerRound) or 1) > 1,
     }
     gunProfileCache[configModule] = profile
@@ -2066,13 +2174,35 @@ getGunAimState = function()
         fireRate = tonumber(tool:GetAttribute("FireRate")) or 600,
         recoveryTime = 0.16,
         recoilFactor = 1,
+        penetrationDepth = 0,
+        pierceBudget = 0,
+        sniper = false,
         shotgun = false,
     }
-    local lastFired = tonumber(tool:GetAttribute("LastFired"))
-    local shotAge = lastFired and (os.clock() - lastFired) or math.huge
     local heat = math.clamp(tonumber(tool:GetAttribute("RateHeat")) or 0, 0, 1)
     local character = player.Character
-    local ads = shared.aim == true or (character and character:GetAttribute("aim") == true)
+    local lastFired = tonumber(tool:GetAttribute("LastFired"))
+    local runtime = gunRuntimeCache[tool]
+    if not runtime then
+        runtime = { heat = heat, lastFired = lastFired, firedAt = -math.huge }
+        gunRuntimeCache[tool] = runtime
+    end
+    -- LastFired is not guaranteed to use os.clock's time domain. Detect a shot
+    -- from attribute/heat changes and timestamp it locally instead.
+    if (lastFired ~= nil and lastFired ~= runtime.lastFired) or heat > runtime.heat + 0.005 then
+        runtime.firedAt = os.clock()
+    end
+    runtime.lastFired = lastFired
+    runtime.heat = heat
+    local shotAge = os.clock() - runtime.firedAt
+    local sharedAim = type(shared) == "table" and shared.aim == true
+    local ads = sharedAim
+        or (character and (character:GetAttribute("aim") == true
+            or character:GetAttribute("Aiming") == true
+            or character:GetAttribute("ADS") == true))
+        or tool:GetAttribute("aim") == true
+        or tool:GetAttribute("Aiming") == true
+        or tool:GetAttribute("ADS") == true
     local recoilFactor = profile.recoilFactor
     if cfg.AimTargetPart == "Smart" and ads then
         recoilFactor = recoilFactor / profile.aimRecoilReduction
@@ -2082,7 +2212,10 @@ getGunAimState = function()
         heat = heat,
         recovering = shotAge >= 0 and shotAge <= profile.recoveryTime,
         recoilFactor = recoilFactor,
+        penetrationDepth = profile.penetrationDepth,
+        pierceBudget = profile.pierceBudget,
         ads = ads,
+        sniper = profile.sniper,
         shotgun = profile.shotgun,
     }
 end
@@ -2198,7 +2331,7 @@ local function updateAim(dt, cam, vpSize, myRoot)
     local gunState = getGunAimState()
     local tuning = aimStyle()
     local deadzone = tuning.deadzone
-    if cfg.AimTargetPart == "Smart" and gunState then
+    if cfg.AimTargetPart == "Smart" and gunState and not gunState.sniper then
         deadzone = deadzone + gunState.heat * tuning.spreadDeadzone
     end
     if math.sqrt(dx * dx + dy * dy) <= deadzone then return end
