@@ -8,9 +8,10 @@
 
     Safety:
       * Visuals live in gethui(), never under workspace / the enemy character.
-      * No hooks (the "/" hook-detector stays quiet).
-      * Aim nudges the OS mouse (mousemoverel) — no camera/CFrame writes, no
-        remotes; the game's own Scriptable camera turns naturally.
+      * Regular Aim uses no hooks. Optional Silent Aim patches the game's
+        Network.FireServer method only while its toggle is enabled (high risk).
+      * Regular Aim nudges the OS mouse (mousemoverel) and never writes camera.
+        Silent Aim is separate and rewrites only the direction of `fire`.
       * Never touches WalkSpeed / JumpPower / position (server MovementAnticheat).
       * Chams use a Highlight in gethui() adorneed to the target; the character
         itself gets no new instances.
@@ -1867,6 +1868,16 @@ local aimServo = {
     ballisticCache = setmetatable({}, { __mode = "k" }),
     gunStamp = -1, gunState = nil,
 }
+aimServo.silent = {
+    installed = false, network = nil, original = nil, wrapper = nil,
+    wasReadonly = false, lockedModel = nil, lockedPart = nil, lockedAt = 0,
+    redirected = 0, lastTarget = "", lastError = "",
+    styles = {
+        Legit = { angle = 2.25, chance = 0.82, ads = true, penetration = false, hold = 0.18 },
+        Rage = { angle = 12, chance = 1, ads = false, penetration = true, hold = 0.35 },
+        SuperRage = { angle = 45, chance = 1, ads = false, penetration = true, hold = 0.55 },
+    },
+}
 local aimPointLocal = setmetatable({}, { __mode = "k" })
 local aimPointState = setmetatable({}, { __mode = "k" })
 local aimPointMode = setmetatable({}, { __mode = "k" })
@@ -2618,6 +2629,164 @@ getGunAimState = function()
     }
 end
 
+-- Silent Aim is intentionally installed only after its toggle is enabled.
+-- Unlike regular Aim this changes the direction passed to the game's own
+-- `fire` network call, so merely loading the script leaves the network intact.
+aimServo.silentStyle = function()
+    return aimServo.silent.styles[cfg.SilentAimStyle] or aimServo.silent.styles.Legit
+end
+
+aimServo.silentPathClear = function(cam, origin, part, point, penetration)
+    if not part or not point then return false end
+    local allowBodyHit = part.Name ~= "Head"
+    local filter = currentAimFilter(cam)
+    if penetration then
+        return rayReachesAimPart(origin, part, point, filter, allowBodyHit)
+            and hasAimLineOfSight(cam, part, point)
+    end
+    aimRayParams.FilterDescendantsInstances = filter
+    return rayReachesTarget(origin, point, part, aimRayParams, allowBodyHit, 0, 0)
+        and rayReachesTarget(cam.CFrame.Position, point, part, aimRayParams, allowBodyHit, 0, 0)
+end
+
+aimServo.pickSilentDirection = function(origin, originalDirection)
+    local cam = workspace.CurrentCamera
+    local character = player.Character
+    local myRoot = character and character:FindFirstChild("HumanoidRootPart")
+    local gun = getGunAimState()
+    local style = aimServo.silentStyle()
+    if not cam or not myRoot or not gun or typeof(origin) ~= "Vector3"
+        or typeof(originalDirection) ~= "Vector3" or originalDirection.Magnitude < 0.001 then
+        return nil
+    end
+    if style.ads and not gun.ads then return nil end
+    if style.chance < 1 and math.random() > style.chance then return nil end
+
+    local shotDirection = originalDirection.Unit
+    local maxDistance = math.min(cfg.AimMaxDist or 1500, gun.maxDistance or 2000)
+    local bestPart, bestPoint, bestScore = nil, nil, math.huge
+    local now = os.clock()
+
+    for model, data in pairs(cache) do
+        local skip = data.isNpc and not cfg.AimTargetNpcs or (not data.isNpc and not cfg.AimTargetPlayers)
+        local humanoid = model:FindFirstChildOfClass("Humanoid")
+        if not skip and not aimServo.modelEligible(model, humanoid) then skip = true end
+        if not skip and not data.isNpc then
+            local targetPlayer = Players:GetPlayerFromCharacter(model)
+            if targetPlayer and aimWhitelist[targetPlayer.UserId] then skip = true end
+            if targetPlayer and cfg.AimTeamCheck and targetPlayer.Team and targetPlayer.Team == player.Team then skip = true end
+        end
+        local anchor = not skip and (model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head"))
+        if not anchor or (anchor.Position - myRoot.Position).Magnitude > maxDistance then skip = true end
+
+        if not skip then
+            for _, part in ipairs(aimParts(model)) do
+                -- Reuse the multipoint sampler from Smart Aim. Visibility is
+                -- validated against the real body point; the compensated point
+                -- is deliberately not ray-tested as a straight line because a
+                -- projectile has an arcing trajectory and would otherwise fail
+                -- every sufficiently long shot.
+                local rawPoint = visibleAimPoint(cam, part)
+                if rawPoint and aimServo.silentPathClear(cam, origin, part, rawPoint, style.penetration) then
+                    local predicted = aimServo.ballisticPoint(part, cam)
+                    local desired = predicted - origin
+                    if desired.Magnitude > 0.001 then
+                        local angle = math.deg(math.acos(math.clamp(shotDirection:Dot(desired.Unit), -1, 1)))
+                        if angle <= style.angle then
+                            local distance = desired.Magnitude
+                            local score = aimScore(humanoid, angle * 100, distance)
+                            if model == aimServo.silent.lockedModel
+                                and now - aimServo.silent.lockedAt <= style.hold then
+                                -- Do not alternate between two overlapping bots
+                                -- while the retained target is still shootable.
+                                score = -math.huge
+                            end
+                            if score < bestScore then
+                                bestPart, bestPoint, bestScore = part, predicted, score
+                            end
+                            -- aimParts is ordered Head -> torso in Smart mode;
+                            -- use the first shootable point instead of drifting
+                            -- to a torso merely because it is one pixel nearer.
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    if not bestPart then return nil end
+    aimServo.silent.lockedModel = bestPart:FindFirstAncestorOfClass("Model")
+    aimServo.silent.lockedPart = bestPart
+    aimServo.silent.lockedAt = now
+    aimServo.silent.lastTarget = aimServo.silent.lockedModel and aimServo.silent.lockedModel.Name or bestPart.Name
+    return (bestPoint - origin).Unit, bestPart
+end
+
+aimServo.uninstallSilent = function()
+    local state = aimServo.silent
+    if not state.installed then return true end
+    if setreadonly and state.wasReadonly then pcall(setreadonly, state.network, false) end
+    local ok, err = pcall(function()
+        if state.network and state.network.FireServer == state.wrapper then
+            state.network.FireServer = state.original
+        end
+    end)
+    if setreadonly and state.wasReadonly then pcall(setreadonly, state.network, true) end
+    state.installed, state.network, state.original, state.wrapper = false, nil, nil, nil
+    if not ok then state.lastError = tostring(err) end
+    return ok, err
+end
+
+aimServo.installSilent = function()
+    local state = aimServo.silent
+    if state.installed then return true end
+    local network = type(shared) == "table" and shared.Network
+    local original = network and network.FireServer
+    if type(network) ~= "table" or type(original) ~= "function" then
+        state.lastError = "shared.Network.FireServer недоступен"
+        return false, state.lastError
+    end
+
+    local wasReadonly = false
+    pcall(function() if isreadonly then wasReadonly = isreadonly(network) end end)
+    local wrapper
+    wrapper = function(self, action, ...)
+        local count = select("#", ...)
+        local args = { ... }
+        if action == "fire" and cfg.SilentAimEnabled == true
+            and typeof(args[2]) == "Vector3" and typeof(args[3]) == "Vector3" then
+            local redirected, targetPart = aimServo.pickSilentDirection(args[2], args[3])
+            if redirected then
+                args[3] = redirected
+                state.redirected = state.redirected + 1
+                if aimTrace.active then
+                    aimTrace.add("silent_redirect", {
+                        target = state.lastTarget,
+                        part = targetPart and targetPart.Name or "",
+                        silentStyle = tostring(cfg.SilentAimStyle or "Legit"),
+                    })
+                end
+            end
+        end
+        return original(self, action, table.unpack(args, 1, count))
+    end
+
+    local ok, err = pcall(function()
+        if setreadonly and wasReadonly then setreadonly(network, false) end
+        network.FireServer = wrapper
+        if setreadonly and wasReadonly then setreadonly(network, true) end
+    end)
+    if not ok or network.FireServer ~= wrapper then
+        pcall(function() if setreadonly and wasReadonly then setreadonly(network, true) end end)
+        state.lastError = tostring(err or "метод защищён от изменения")
+        return false, state.lastError
+    end
+    state.installed, state.network, state.original = true, network, original
+    state.wrapper, state.wasReadonly, state.lastError = wrapper, wasReadonly, ""
+    return true
+end
+
 -- Toggle the player nearest the crosshair in/out of the aim whitelist
 local function whitelistNearestPlayer()
     local cam = workspace.CurrentCamera
@@ -3280,6 +3449,7 @@ local function cleanup(fromWindow)
     if cleanedUp then return end
     cleanedUp = true
     if aimTrace.active then pcall(aimTrace.stop) end
+    pcall(aimServo.uninstallSilent)
     pcall(restoreMenuMouse)
     unbindAim()
     stopRender()
@@ -3298,6 +3468,7 @@ local function cleanup(fromWindow)
         getgenv().__HAKO_CONFIG_API = nil
         getgenv().__HAKO_AIM_TRACE = nil
         getgenv().__HAKO_AIM_DEBUG = nil
+        getgenv().__HAKO_SILENT_DEBUG = nil
     end
     if Window and not fromWindow then pcall(function() Window:Unload() end) end
 end
@@ -3578,6 +3749,27 @@ aimLft:Dropdown({ Name = "Режим Aim", Options = { "Legit", "Rage", "Super R
 aimLft:Label({ Text = "Legit — плавно и естественно" })
 aimLft:Label({ Text = "Rage — быстро и жёстко" })
 aimLft:Label({ Text = "Super Rage — максимально резко" })
+aimLft:Header({ Name = "Silent Aim • высокий риск" })
+aimLft:Toggle({ Name = "Включить Silent Aim", Default = guiDefault("SilentAimEnabled", false),
+    Callback = function(v)
+        cfg.SilentAimEnabled = v == true
+        if cfg.SilentAimEnabled then
+            local ok, err = aimServo.installSilent()
+            if not ok then
+                cfg.SilentAimEnabled = false
+                if Window then pcall(function() Window:Notify({ Title = "Silent Aim", Description = tostring(err), Lifetime = 5 }) end) end
+            end
+        else
+            aimServo.uninstallSilent()
+        end
+    end }, "silentEnabled")
+guiDefault("SilentAimStyle", "Legit")
+aimLft:Dropdown({ Name = "Режим Silent Aim", Options = { "Legit", "Rage", "Super Rage" },
+    Default = 1, Multi = false, Callback = function(v)
+        cfg.SilentAimStyle = ({["Legit"]="Legit", ["Rage"]="Rage", ["Super Rage"]="SuperRage", ["SuperRage"]="SuperRage"})[v] or "Legit"
+    end }, "silentStyle")
+aimLft:Label({ Text = "Legit: ADS и малый угол • Rage: 12° • Super Rage: 45°" })
+aimLft:Label({ Text = "Подменяет направление fire; гарантий от античита нет." })
 
 aimRgt:Header({ Name = "Выбор цели" })
 guiDefault("AimTargetPart", "Smart")
@@ -3618,12 +3810,29 @@ cfgTab:InsertConfigSection("Left")
 local cfgR = cfgTab:Section({ Side = "Right" })
 cfgR:Header({ Name = "Скрипт" })
 cfgR:Label({ Text = "Визуалы не меняют workspace; гарантии обхода античита нет." })
-cfgR:Label({ Text = "Прицел двигает мышь. Без хуков и вызова RemoteEvent." })
+cfgR:Label({ Text = "Обычный Aim двигает мышь без remotes. Silent Aim отдельно меняет направление fire." })
 cfgR:Divider()
 cfgR:Button({ Name = "Выгрузить скрипт", Callback = function() cleanup() end })
 end
 
 if getgenv then
+    getgenv().__HAKO_SILENT_DEBUG = {
+        Status = function()
+            local state = aimServo.silent
+            return {
+                enabled = cfg.SilentAimEnabled == true,
+                installed = state.installed == true,
+                style = tostring(cfg.SilentAimStyle or "Legit"),
+                redirected = state.redirected,
+                lastTarget = state.lastTarget,
+                lastError = state.lastError,
+            }
+        end,
+        Disable = function()
+            cfg.SilentAimEnabled = false
+            return aimServo.uninstallSilent()
+        end,
+    }
     getgenv().__HAKO_AIM_DEBUG = {
         Status = function()
             local cam = workspace.CurrentCamera
