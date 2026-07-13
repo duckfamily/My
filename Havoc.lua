@@ -49,6 +49,130 @@ if not okLib or not MacLib then
 end
 pcall(function() MacLib:SetFolder("hako") end)
 
+-- MacLib's bundled config parser skips Toggle=false during load and serializes
+-- the Keybind:Bind method instead of the currently selected key. Keep its GUI,
+-- folder layout and autoload UI, but replace only the serializer so every
+-- control round-trips correctly (including MouseButton keybinds).
+do
+    local function colorToHex(color)
+        return string.format("#%02X%02X%02X",
+            math.floor(math.clamp(color.R, 0, 1) * 255 + 0.5),
+            math.floor(math.clamp(color.G, 0, 1) * 255 + 0.5),
+            math.floor(math.clamp(color.B, 0, 1) * 255 + 0.5))
+    end
+
+    local function hexToColor(hex)
+        if type(hex) ~= "string" or not hex:match("^#%x%x%x%x%x%x$") then return nil end
+        return Color3.fromRGB(
+            tonumber(hex:sub(2, 3), 16),
+            tonumber(hex:sub(4, 5), 16),
+            tonumber(hex:sub(6, 7), 16))
+    end
+
+    function MacLib:SaveConfig(path)
+        if not writefile then return false, "Config system unavailable." end
+        if not path or tostring(path):gsub("%s", "") == "" then
+            return false, "Please select a config file."
+        end
+
+        local objects = {}
+        for flag, option in pairs(MacLib.Options or {}) do
+            if not option.IgnoreConfig then
+                local class = option.Class
+                local object = { type = class, flag = flag }
+                if class == "Toggle" then
+                    if option.GetState then object.state = option:GetState()
+                    else object.state = option.State == true end
+                elseif class == "Slider" then
+                    local value = option.GetValue and option:GetValue() or option.Value
+                    object.value = value ~= nil and tostring(value) or nil
+                elseif class == "Input" then
+                    object.text = option.GetInput and option:GetInput() or option.Text
+                elseif class == "Keybind" then
+                    local bind = option.GetBind and option:GetBind() or nil
+                    if typeof(bind) == "EnumItem" then
+                        object.bind = bind.Name
+                        object.bindType = tostring(bind.EnumType)
+                    end
+                elseif class == "Dropdown" then
+                    object.value = option.Value
+                elseif class == "Colorpicker" and typeof(option.Color) == "Color3" then
+                    object.color = colorToHex(option.Color)
+                    object.alpha = option.Alpha
+                else
+                    object = nil
+                end
+                if object then objects[#objects + 1] = object end
+            end
+        end
+        table.sort(objects, function(a, b) return tostring(a.flag) < tostring(b.flag) end)
+
+        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, { version = 2, objects = objects })
+        if not ok then return false, "Unable to encode JSON: " .. tostring(encoded) end
+        local fullPath = MacLib.Folder .. "/settings/" .. tostring(path) .. ".json"
+        local wrote, err = pcall(writefile, fullPath, encoded)
+        if not wrote then return false, tostring(err) end
+        return true
+    end
+
+    function MacLib:LoadConfig(path)
+        if not (isfile and readfile) then return false, "Config system unavailable." end
+        if not path or tostring(path):gsub("%s", "") == "" then
+            return false, "Please select a config file."
+        end
+
+        local file = MacLib.Folder .. "/settings/" .. tostring(path) .. ".json"
+        if not isfile(file) then return false, "Invalid file" end
+        local readOk, content = pcall(readfile, file)
+        if not readOk then return false, tostring(content) end
+        local decodeOk, decoded = pcall(HttpService.JSONDecode, HttpService, content)
+        if not decodeOk or type(decoded) ~= "table" or type(decoded.objects) ~= "table" then
+            return false, "Unable to decode JSON data."
+        end
+
+        local errors = {}
+        for _, object in ipairs(decoded.objects) do
+            local option = MacLib.Options and MacLib.Options[object.flag]
+            if option then
+                local ok, err = pcall(function()
+                    if object.type == "Toggle" and object.state ~= nil then
+                        option:UpdateState(object.state == true)
+                    elseif object.type == "Slider" and object.value ~= nil then
+                        option:UpdateValue(tonumber(object.value))
+                        -- MacLib's UpdateValue refreshes the widget with
+                        -- ignorecallback=true; apply the runtime value too.
+                        if option.Settings and option.Settings.Callback then
+                            option.Settings.Callback(option:GetValue())
+                        end
+                    elseif object.type == "Input" and type(object.text) == "string" then
+                        option:UpdateText(object.text)
+                    elseif object.type == "Keybind" and object.bind then
+                        local bind
+                        if object.bindType == "Enum.UserInputType" then
+                            bind = Enum.UserInputType[object.bind]
+                        elseif object.bindType == "Enum.KeyCode" then
+                            bind = Enum.KeyCode[object.bind]
+                        else
+                            -- Compatibility with version-1 MacLib configs.
+                            bind = Enum.KeyCode[object.bind] or Enum.UserInputType[object.bind]
+                        end
+                        if bind then option:Bind(bind) end
+                    elseif object.type == "Dropdown" and object.value ~= nil then
+                        option:UpdateSelection(object.value)
+                    elseif object.type == "Colorpicker" and object.color then
+                        local color = hexToColor(object.color)
+                        if color then option:SetColor(color) end
+                        if object.alpha ~= nil and option.SetAlpha then option:SetAlpha(object.alpha) end
+                    end
+                end)
+                if not ok then errors[#errors + 1] = tostring(object.flag) .. ": " .. tostring(err) end
+            end
+        end
+        if #errors > 0 then return false, table.concat(errors, "; ") end
+        return true
+    end
+end
+
 -- ============================================================
 -- Hidden GUI root
 -- ============================================================
@@ -1502,6 +1626,8 @@ end
 -- ============================================================
 local aimTarget = nil
 local aimOccludedAt = nil
+local aimLockedModel = nil
+local aimLockedAt = 0
 local aimMouseWarningShown = false
 local smartHeadBlockedAt = setmetatable({}, { __mode = "k" })
 local aimPointLocal = setmetatable({}, { __mode = "k" })
@@ -1539,9 +1665,9 @@ aimRayParams.FilterType = Enum.RaycastFilterType.Exclude
 aimRayParams.IgnoreWater = true
 
 local AIM_STYLE = {
-    Legit = { smoothness = 7, deadzone = 2, maxStep = 18, recoil = 0.75, spreadDeadzone = 2.5 },
-    Rage = { smoothness = 3, deadzone = 0.8, maxStep = 40, recoil = 1.05, spreadDeadzone = 1.25 },
-    SuperRage = { smoothness = 1, deadzone = 0, maxStep = 80, recoil = 1.35, spreadDeadzone = 0.25 },
+    Legit = { smoothness = 7, deadzone = 2, maxStep = 18, recoil = 0.75, spreadDeadzone = 2.5, targetHold = 0.55, switchRatio = 1.08, switchBonus = 3 },
+    Rage = { smoothness = 3, deadzone = 0.8, maxStep = 40, recoil = 1.05, spreadDeadzone = 1.25, targetHold = 0.72, switchRatio = 1.18, switchBonus = 6 },
+    SuperRage = { smoothness = 1, deadzone = 0, maxStep = 80, recoil = 1.35, spreadDeadzone = 0.25, targetHold = 0.85, switchRatio = 1.3, switchBonus = 10 },
 }
 local function aimStyle()
     return AIM_STYLE[cfg.AimStyle] or AIM_STYLE.Legit
@@ -1672,6 +1798,7 @@ local function pickAimTarget(cam, vpSize, myRoot)
     local center = Vector2.new(vpSize.X / 2, vpSize.Y / 2)
     local bestPlayer, bestPlayerScore = nil, math.huge
     local bestNpc, bestNpcScore = nil, math.huge
+    local lockedCandidate, lockedScore = nil, math.huge
 
     for model, d in pairs(cache) do
         local skip = false
@@ -1710,6 +1837,9 @@ local function pickAimTarget(cam, vpSize, myRoot)
                             local sd = (Vector2.new(screen.X, screen.Y) - center).Magnitude
                             if sd < cfg.AimFov then
                                 local score = aimScore(hum, sd, d3)
+                                if model == aimLockedModel then
+                                    lockedCandidate, lockedScore = part, score
+                                end
                                 if d.isNpc then
                                     if score < bestNpcScore then bestNpc, bestNpcScore = part, score end
                                 else
@@ -1722,9 +1852,32 @@ local function pickAimTarget(cam, vpSize, myRoot)
             end
         end
     end
-    if cfg.AimPreferPlayers and bestPlayer then return bestPlayer end
-    if bestPlayerScore <= bestNpcScore then return bestPlayer end
-    return bestNpc
+    local chosen, chosenScore
+    if cfg.AimPreferPlayers and bestPlayer then
+        chosen, chosenScore = bestPlayer, bestPlayerScore
+    elseif bestPlayerScore <= bestNpcScore then
+        chosen, chosenScore = bestPlayer, bestPlayerScore
+    else
+        chosen, chosenScore = bestNpc, bestNpcScore
+    end
+
+    -- Prevent frame-to-frame ping-pong when two targets overlap. Keep the
+    -- current model for a short minimum time and afterwards switch only when
+    -- the replacement is meaningfully better, not one or two pixels better.
+    if lockedCandidate then
+        local tuning = aimStyle()
+        local youngLock = os.clock() - aimLockedAt < tuning.targetHold
+        local closeEnough = not chosen
+            or lockedScore <= chosenScore * tuning.switchRatio + tuning.switchBonus
+        if youngLock or closeEnough then chosen = lockedCandidate end
+    end
+
+    local chosenModel = chosen and chosen:FindFirstAncestorOfClass("Model")
+    if chosenModel ~= aimLockedModel then
+        aimLockedModel = chosenModel
+        aimLockedAt = os.clock()
+    end
+    return chosen
 end
 
 local function isTargetStillValid(cam, myRoot)
@@ -1895,6 +2048,8 @@ local function updateAim(dt, cam, vpSize, myRoot)
     if not cfg.AimEnabled or not aimHolding then
         aimTarget = nil
         aimOccludedAt = nil
+        aimLockedModel = nil
+        aimLockedAt = 0
         return
     end
     if not mousemoverel then
