@@ -41,10 +41,38 @@ local restoreMenuMouse = function() end
 -- Library
 -- ============================================================
 local okLib, MacLib = pcall(function()
-    return loadstring(game:HttpGet("https://github.com/biggaboy212/Maclib/releases/latest/download/maclib.txt"))()
+    local errors = {}
+    for _, url in ipairs({
+        -- Pin the API version this script was verified against. Some executors
+        -- fail the extra /latest redirect even though direct release assets work.
+        "https://github.com/biggaboy212/Maclib/releases/download/9.Maclib/maclib.txt",
+        "https://github.com/biggaboy212/Maclib/releases/latest/download/maclib.txt",
+    }) do
+        local fetched, source = pcall(game.HttpGet, game, url)
+        if fetched and type(source) == "string" then
+            local chunk, compileError = loadstring(source)
+            if chunk then
+                local ran, library = pcall(chunk)
+                if ran and library then return library end
+                errors[#errors + 1] = tostring(library)
+            else
+                errors[#errors + 1] = tostring(compileError)
+            end
+        else
+            errors[#errors + 1] = tostring(source)
+        end
+    end
+    error(table.concat(errors, " | "))
 end)
 if not okLib or not MacLib then
     warn("[HAKO] Failed to load MacLib: " .. tostring(MacLib))
+    pcall(function()
+        game:GetService("StarterGui"):SetCore("SendNotification", {
+            Title = "hako: ошибка загрузки",
+            Text = "MacLib не загрузилась. Откройте консоль исполнителя.",
+            Duration = 10,
+        })
+    end)
     return
 end
 pcall(function() MacLib:SetFolder("hako") end)
@@ -211,29 +239,23 @@ local aimHolding = false
 -- ============================================================
 -- Colors
 -- ============================================================
-local WHITE     = Color3.new(1, 1, 1)
-local BLACK     = Color3.new(0, 0, 0)
-local EXFIL_COL = Color3.fromRGB(0, 255, 128)
-local EXFIL_SUB = Color3.fromRGB(160, 255, 190)
-local TIMER_COL = Color3.fromRGB(255, 220, 100)
-local FOV_COL   = Color3.fromRGB(255, 255, 255)
-
-local LOOT_COL = {
-    Elite = Color3.fromRGB(255, 215, 0),
-    High  = Color3.fromRGB(200, 120, 255),
-    Mid   = Color3.fromRGB(90, 200, 255),
-    Trash = Color3.fromRGB(150, 150, 150),
+local COLORS = {
+    White = Color3.new(1, 1, 1), Black = Color3.new(0, 0, 0),
+    Exfil = Color3.fromRGB(0, 255, 128), ExfilSub = Color3.fromRGB(160, 255, 190),
+    Timer = Color3.fromRGB(255, 220, 100), Fov = Color3.fromRGB(255, 255, 255),
+    Item = Color3.fromRGB(120, 255, 130), Body = Color3.fromRGB(230, 230, 230),
+    HpRed = Color3.fromRGB(255, 45, 45), HpYellow = Color3.fromRGB(255, 210, 50),
+    HpGreen = Color3.fromRGB(60, 255, 70),
+    Loot = {
+        Elite = Color3.fromRGB(255, 215, 0), High = Color3.fromRGB(200, 120, 255),
+        Mid = Color3.fromRGB(90, 200, 255), Trash = Color3.fromRGB(150, 150, 150),
+    },
 }
-local ITEM_COL = Color3.fromRGB(120, 255, 130)
-local BODY_COL = Color3.fromRGB(230, 230, 230)
 
 -- Health -> color (green full, yellow half, red low). Color indicates HP level.
-local HP_RED = Color3.fromRGB(255, 45, 45)
-local HP_YEL = Color3.fromRGB(255, 210, 50)
-local HP_GRN = Color3.fromRGB(60, 255, 70)
 local function hpColor(frac)
-    if frac >= 0.5 then return HP_YEL:Lerp(HP_GRN, (frac - 0.5) * 2) end
-    return HP_RED:Lerp(HP_YEL, frac * 2)
+    if frac >= 0.5 then return COLORS.HpYellow:Lerp(COLORS.HpGreen, (frac - 0.5) * 2) end
+    return COLORS.HpRed:Lerp(COLORS.HpYellow, frac * 2)
 end
 
 -- ============================================================
@@ -245,7 +267,7 @@ end
 
 local function mkStroke(parent, color, thick, transparency)
     return newInst("UIStroke", {
-        Color = color or BLACK,
+        Color = color or COLORS.Black,
         Thickness = thick or 1,
         Transparency = transparency or 0,
         -- Contextual: outlines text glyphs (and follows frame shape) instead of
@@ -259,8 +281,8 @@ local function mkText(parent, size, bold)
         BackgroundTransparency = 1,
         Font = bold and Enum.Font.GothamBold or Enum.Font.GothamMedium,
         TextSize = size or 13,
-        TextColor3 = WHITE,
-        TextStrokeColor3 = BLACK,       -- glyph outline (no border box)
+        TextColor3 = COLORS.White,
+        TextStrokeColor3 = COLORS.Black,       -- glyph outline (no border box)
         TextStrokeTransparency = 0.15,
         Text = "",
         RichText = true,
@@ -299,8 +321,8 @@ local function createEntry(model, isNpc)
     d.hl = newInst("Highlight", {
         Adornee = model,
         Enabled = false,
-        FillColor = WHITE,
-        OutlineColor = WHITE,
+        FillColor = COLORS.White,
+        OutlineColor = COLORS.White,
         FillTransparency = 1,
         OutlineTransparency = 0,
         DepthMode = Enum.HighlightDepthMode.AlwaysOnTop,
@@ -317,26 +339,26 @@ local function createEntry(model, isNpc)
     d.infoBB = infoBB
     d.nameLabel = newInst("TextLabel", {
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 18), Position = UDim2.fromOffset(0, 0),
-        Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = WHITE, Text = "",
-        TextStrokeColor3 = BLACK, TextStrokeTransparency = 0.15,
+        Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = COLORS.White, Text = "",
+        TextStrokeColor3 = COLORS.Black, TextStrokeTransparency = 0.15,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, infoBB)
     d.detailLabel = newInst("TextLabel", {
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 15), Position = UDim2.fromOffset(0, 19),
         Font = Enum.Font.GothamMedium, TextSize = 10, TextColor3 = Color3.fromRGB(215, 215, 215), Text = "",
-        TextStrokeColor3 = BLACK, TextStrokeTransparency = 0.2,
+        TextStrokeColor3 = COLORS.Black, TextStrokeTransparency = 0.2,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, infoBB)
     d.weapLabel = newInst("TextLabel", {
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 15), Position = UDim2.fromOffset(0, 35),
         Font = Enum.Font.GothamBold, TextSize = 10, TextColor3 = Color3.fromRGB(255, 200, 90), Text = "",
-        TextStrokeColor3 = BLACK, TextStrokeTransparency = 0.2,
+        TextStrokeColor3 = COLORS.Black, TextStrokeTransparency = 0.2,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, infoBB)
     d.gearLabel = newInst("TextLabel", {
         BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 15), Position = UDim2.fromOffset(0, 51),
         Font = Enum.Font.GothamMedium, TextSize = 9, TextColor3 = Color3.fromRGB(150, 205, 255), Text = "",
-        TextStrokeColor3 = BLACK, TextStrokeTransparency = 0.2,
+        TextStrokeColor3 = COLORS.Black, TextStrokeTransparency = 0.2,
         TextXAlignment = Enum.TextXAlignment.Center,
     }, infoBB)
 
@@ -353,10 +375,10 @@ local function createEntry(model, isNpc)
         Size = UDim2.fromScale(1, 1), BorderSizePixel = 0,
     }, hpBB)
     newInst("UICorner", { CornerRadius = UDim.new(1, 0) }, hpBg)
-    mkStroke(hpBg, BLACK, 1.4, 0.4)
+    mkStroke(hpBg, COLORS.Black, 1.4, 0.4)
     local hpFill = newInst("Frame", {
         AnchorPoint = Vector2.new(0.5, 1), Position = UDim2.new(0.5, 0, 1, 0),
-        Size = UDim2.new(1, 0, 1, 0), BorderSizePixel = 0, BackgroundColor3 = WHITE,
+        Size = UDim2.new(1, 0, 1, 0), BorderSizePixel = 0, BackgroundColor3 = COLORS.White,
     }, hpBg)
     newInst("UICorner", { CornerRadius = UDim.new(1, 0) }, hpFill)
     -- subtle vertical gloss; the fill's solid colour carries the HP level
@@ -372,7 +394,7 @@ local function createEntry(model, isNpc)
     -- Tracer (2D, screen-space rotated line)
     d.tr = newInst("Frame", {
         AnchorPoint = Vector2.new(0.5, 0.5),
-        BackgroundColor3 = WHITE, BorderSizePixel = 0,
+        BackgroundColor3 = COLORS.White, BorderSizePixel = 0,
         Size = UDim2.fromOffset(0, 2), Visible = false,
     }, espGui)
 
@@ -708,7 +730,7 @@ local raidLabel = newInst("TextLabel", {
     Size = UDim2.fromScale(1, 1),
     Font = Enum.Font.GothamBold,
     TextSize = 14,
-    TextColor3 = TIMER_COL,
+    TextColor3 = COLORS.Timer,
     Text = "РЕЙД",
 }, raidPill)
 
@@ -766,9 +788,9 @@ local function findExfils()
         alive[name] = true
         if not exfilCache[name] then
             local text = mkText(espGui, 10, true)
-            text.TextColor3 = EXFIL_COL
+            text.TextColor3 = COLORS.Exfil
             local sub = mkText(espGui, 9, false)
-            sub.TextColor3 = EXFIL_SUB
+            sub.TextColor3 = COLORS.ExfilSub
             exfilCache[name] = { text = text, sub = sub, ename = name }
         end
         return exfilCache[name]
@@ -819,7 +841,7 @@ local function drawExfils(myRoot, cam)
             local dist = myRoot and (pos - myRoot.Position).Magnitude or 0
             local locked = state and state.locked
             local nearest = name == nearestName
-            local color = locked and Color3.fromRGB(255, 80, 65) or (nearest and Color3.fromRGB(255, 225, 70) or EXFIL_COL)
+            local color = locked and Color3.fromRGB(255, 80, 65) or (nearest and Color3.fromRGB(255, 225, 70) or COLORS.Exfil)
             if not onScreen then return false end
             d.text.Text = locked and "ЗАКРЫТЫЙ ВЫХОД" or (nearest and "БЛИЖАЙШИЙ ВЫХОД" or "ВЫХОД")
             d.text.TextColor3 = color
@@ -896,7 +918,7 @@ local function updateRaidTimer(dt)
     if cfg.ServerInfo and fps then extras[#extras + 1] = tostring(fps) .. " К/С" end
     raidLabel.Text = "РЕЙД  " .. formatRaidTime(val) .. (#extras > 0 and ("  •  " .. table.concat(extras, "  •  ")) or "")
     if type(maxTime) == "number" and maxTime > 0 then
-        raidLabel.TextColor3 = Color3.fromRGB(255, 55, 55):Lerp(TIMER_COL, math.clamp(val / maxTime, 0, 1))
+        raidLabel.TextColor3 = Color3.fromRGB(255, 55, 55):Lerp(COLORS.Timer, math.clamp(val / maxTime, 0, 1))
     end
     raidPill.Visible = true
     if cfg.RaidWarnings then
@@ -1291,7 +1313,7 @@ local function rebuildLoot()
                     local tier = rarityOf(cc.Name)
                     local ok, piv = pcall(function() return cc:GetPivot().Position end)
                     if ok and piv then
-                        new[#new + 1] = { inst = cc, pos = piv, top = piv + Vector3.new(0, 2, 0), label = cc.Name, cat = "container", tier = tier, color = LOOT_COL[tier], price = 0, pricePerKg = 0 }
+                        new[#new + 1] = { inst = cc, pos = piv, top = piv + Vector3.new(0, 2, 0), label = cc.Name, cat = "container", tier = tier, color = COLORS.Loot[tier], price = 0, pricePerKg = 0 }
                     end
                 end
             end
@@ -1301,7 +1323,7 @@ local function rebuildLoot()
             for _, cc in ipairs(chars:GetChildren()) do
                 local ok, piv = pcall(function() return cc:GetPivot().Position end)
                 if ok and piv then
-                    new[#new + 1] = { inst = cc, pos = piv, top = piv + Vector3.new(0, 2, 0), label = "☠ Body", cat = "body", color = BODY_COL, price = 0, pricePerKg = 0 }
+                    new[#new + 1] = { inst = cc, pos = piv, top = piv + Vector3.new(0, 2, 0), label = "☠ Body", cat = "body", color = COLORS.Body, price = 0, pricePerKg = 0 }
                 end
             end
         end
@@ -1312,7 +1334,7 @@ local function rebuildLoot()
         for _, cc in ipairs(items:GetChildren()) do
             local ok, piv = pcall(function() return cc:GetPivot().Position end)
             if ok and piv then
-                local entry = { inst = cc, pos = piv, top = piv + Vector3.new(0, 2, 0), label = cc.Name, cat = "item", color = ITEM_COL, price = 0, pricePerKg = 0 }
+                local entry = { inst = cc, pos = piv, top = piv + Vector3.new(0, 2, 0), label = cc.Name, cat = "item", color = COLORS.Item, price = 0, pricePerKg = 0 }
                 new[#new + 1] = enrichLootEntry(entry)
             end
         end
@@ -1671,7 +1693,7 @@ local fovCircle = newInst("Frame", {
     Visible = false,
 }, espGui)
 mkCorner(fovCircle, 999)
-mkStroke(fovCircle, FOV_COL, 1.5, 0.4)
+mkStroke(fovCircle, COLORS.Fov, 1.5, 0.4)
 
 local aimRayParams = RaycastParams.new()
 aimRayParams.FilterType = Enum.RaycastFilterType.Exclude
@@ -2519,6 +2541,7 @@ end
 local Tabs = Window:TabGroup()
 
 -- ---------- ESP TAB ----------
+do
 local espTab = Tabs:Tab({ Name = "ESP" })
 local espL = espTab:Section({ Side = "Left" })
 local espR = espTab:Section({ Side = "Right" })
@@ -2577,8 +2600,10 @@ espR:Colorpicker({ Name = "Цель за стеной", Default = guiDefault("Hi
     Callback = function(c) cfg.HiddenColor = c end }, "colHidden")
 espR:Colorpicker({ Name = "NPC", Default = guiDefault("NpcColor", Color3.fromRGB(255, 150, 50)),
     Callback = function(c) cfg.NpcColor = c end }, "colNpc")
+end
 
 -- ---------- LOOT TAB ----------
+do
 local lootTab = Tabs:Tab({ Name = "Лут" })
 local lootL = lootTab:Section({ Side = "Left" })
 local lootR = lootTab:Section({ Side = "Right" })
@@ -2620,8 +2645,10 @@ lootR:Toggle({ Name = "Показывать цену", Default = guiDefault("Loo
     Callback = function(v) cfg.LootShowPrice = v end }, "lootPrice")
 lootR:Toggle({ Name = "Показывать категорию", Default = guiDefault("LootShowCategory", false),
     Callback = function(v) cfg.LootShowCategory = v end }, "lootCategory")
+end
 
 -- ---------- HELPERS TAB ----------
+do
 local helperTab = Tabs:Tab({ Name = "Помощники" })
 local helperL = helperTab:Section({ Side = "Left" })
 local helperR = helperTab:Section({ Side = "Right" })
@@ -2652,8 +2679,10 @@ helperR:Toggle({ Name = "Список ценного лута", Default = guiDef
 helperR:Toggle({ Name = "Советы над предметами", Default = guiDefault("LootShowAdvice", false),
     Callback = function(v) cfg.LootShowAdvice = v; ensureRender() end }, "lootAdvice")
 helperR:Label({ Text = "Подсказки появляются только при включённом ESP лута." })
+end
 
 -- ---------- WORLD TAB ----------
+do
 local worldTab = Tabs:Tab({ Name = "Мир" })
 local worldL = worldTab:Section({ Side = "Left" })
 local worldR = worldTab:Section({ Side = "Right" })
@@ -2693,8 +2722,10 @@ worldR:Toggle({ Name = "Проверять ключи", Default = guiDefault("Do
 worldR:Header({ Name = "Окружение" })
 worldR:Toggle({ Name = "Полная яркость", Default = guiDefault("Fullbright", false),
     Callback = function(v) cfg.Fullbright = v; if v then applyFullbright() else restoreFullbright() end end }, "worldFullbright")
+end
 
 -- ---------- AIM TAB ----------
+do
 local aimTab = Tabs:Tab({ Name = "Прицел" })
 local aimLft = aimTab:Section({ Side = "Left" })
 local aimRgt = aimTab:Section({ Side = "Right" })
@@ -2753,8 +2784,10 @@ aimRgt:Button({ Name = "Очистить белый список", Callback = fu
     saveWhitelist()
     if Window then pcall(function() Window:Notify({ Title = "Белый список", Description = "Очищен", Lifetime = 3 }) end) end
 end })
+end
 
 -- ---------- CONFIG TAB ----------
+do
 local cfgTab = Tabs:Tab({ Name = "Настройки" })
 cfgTab:InsertConfigSection("Left")
 local cfgR = cfgTab:Section({ Side = "Right" })
@@ -2763,6 +2796,7 @@ cfgR:Label({ Text = "Визуалы не меняют workspace; гаранти�
 cfgR:Label({ Text = "Прицел двигает мышь. Без хуков и вызова RemoteEvent." })
 cfgR:Divider()
 cfgR:Button({ Name = "Выгрузить скрипт", Callback = function() cleanup() end })
+end
 
 Window:Notify({
     Title = "hako",
