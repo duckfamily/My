@@ -515,7 +515,7 @@ local function rayPartDepth(entryPosition, unit, part, material)
     local outside = entryPosition + unit * math.max(part.Size.Magnitude, 0.1)
     local exitHit = workspace:Raycast(outside, entryPosition - outside, penetrationState.include)
     if not exitHit then return nil end
-    return (entryPosition - exitHit.Position).Magnitude + penetrationHardness(material), exitHit.Position
+    return (entryPosition - exitHit.Position).Magnitude, exitHit.Position, penetrationHardness(material)
 end
 
 local function isDoorPart(part)
@@ -526,11 +526,11 @@ local function isDoorPart(part)
 end
 
 local function isVisualNoise(part, material)
-    if part:IsA("BasePart") and part.Transparency >= 0.95 then return true end
-    if material == Enum.Material.Glass or material == Enum.Material.ForceField then return true end
-    local buildings = workspace:FindFirstChild("Buildings")
-    local glass = buildings and buildings:FindFirstChild("Glass")
-    return glass ~= nil and part:IsDescendantOf(glass)
+    -- The game's projectile ray does not ignore a surface merely because it is
+    -- transparent or made of glass. Query/collision groups already remove true
+    -- visual-only objects. Everything returned here must therefore consume the
+    -- weapon's real penetration budget.
+    return false
 end
 
 rayReachesTarget = function(origin, targetPosition, targetPart, params, allowBodyHit, penetrationDepth, totalPierceBudget)
@@ -543,7 +543,10 @@ rayReachesTarget = function(origin, targetPosition, targetPart, params, allowBod
     local totalLimit = math.max(tonumber(totalPierceBudget) or 0, 0)
     local spent = 0
 
-    for _ = 1, 6 do
+    -- FastCast may continue through several thin layers (glass, foliage,
+    -- fences). Six was too small for broken vehicle windows and could mark an
+    -- otherwise valid shot as blocked midway through the path.
+    for _ = 1, 12 do
         local remaining = targetPosition - cursor
         if remaining:Dot(unit) <= 0 then return true end
         local result = workspace:Raycast(cursor, remaining, params)
@@ -555,13 +558,15 @@ rayReachesTarget = function(origin, targetPosition, targetPart, params, allowBod
         if hit == workspace.Terrain or not hit:IsA("BasePart") then return false end
 
         local noise = isVisualNoise(hit, result.Material)
-        local depth, exitPosition = rayPartDepth(result.Position, unit, hit, result.Material)
+        local depth, exitPosition, hardness = rayPartDepth(result.Position, unit, hit, result.Material)
         if not depth or not exitPosition then return false end
         if not noise then
             if surfaceLimit <= 0 or isDoorPart(hit) or depth > surfaceLimit or spent >= totalLimit then
                 return false
             end
-            spent = spent + math.max(depth, 0)
+            -- Match MaterialPenetration exactly: soft materials are allowed to
+            -- reduce the accumulated cost (glass/cloth have negative hardness).
+            spent = spent + depth + (hardness or 0)
         end
         cursor = exitPosition + unit * 0.02
     end
@@ -1855,8 +1860,12 @@ local aimMouseWarningShown = false
 local aimServo = {
     model = nil, part = nil, prevDx = nil, prevDy = nil,
     damping = 1, brakeUntil = 0, stableFrames = 0,
-    mouseGain = 3.6, commandX = nil, commandY = nil, commandAt = 0,
+    mouseGain = 3.6, mouseGainX = 3.6, mouseGainY = 3.6,
+    commandX = nil, commandY = nil, commandAt = 0,
     residualX = 0, residualY = 0,
+    profileKey = nil, gainProfiles = {},
+    ballisticCache = setmetatable({}, { __mode = "k" }),
+    gunStamp = -1, gunState = nil,
 }
 local aimPointLocal = setmetatable({}, { __mode = "k" })
 local aimPointState = setmetatable({}, { __mode = "k" })
@@ -2030,7 +2039,11 @@ end
 
 local function rayReachesAimPart(origin, targetPart, targetPosition, filter, allowBodyHit)
     aimRayParams.FilterDescendantsInstances = filter
-    local gunState = getGunAimState()
+    local stamp = workspace.DistributedGameTime
+    if aimServo.gunStamp ~= stamp then
+        aimServo.gunStamp, aimServo.gunState = stamp, getGunAimState()
+    end
+    local gunState = aimServo.gunState
     local penetrationDepth = gunState and gunState.penetrationDepth or 0
     local pierceBudget = gunState and gunState.pierceBudget or 0
     return rayReachesTarget(origin, targetPosition, targetPart, aimRayParams, allowBodyHit, penetrationDepth, pierceBudget)
@@ -2040,7 +2053,11 @@ local function hasAimLineOfSight(cam, targetPart, targetPosition)
     local character = player.Character
     local filter = currentAimFilter(cam)
     targetPosition = targetPosition or targetPart.Position
-    if not rayReachesAimPart(cam.CFrame.Position, targetPart, targetPosition, filter, true) then
+    -- A ray that hits the torso must not validate a requested head point. This
+    -- was the cause of Smart Aim selecting a head hidden by a truck/terrain and
+    -- then driving the camera into the obstacle.
+    local allowBodyHit = targetPart.Name ~= "Head"
+    if not rayReachesAimPart(cam.CFrame.Position, targetPart, targetPosition, filter, allowBodyHit) then
         return false
     end
 
@@ -2048,7 +2065,7 @@ local function hasAimLineOfSight(cam, targetPart, targetPosition)
     -- Handle.MuzzleFX. Require the same point to be clear from the muzzle so a
     -- visible head above a truck is not selected while the barrel hits its side.
     local muzzlePosition = equippedMuzzlePosition(character)
-    if muzzlePosition and not rayReachesAimPart(muzzlePosition, targetPart, targetPosition, filter, true) then
+    if muzzlePosition and not rayReachesAimPart(muzzlePosition, targetPart, targetPosition, filter, allowBodyHit) then
         return false
     end
     return true
@@ -2060,16 +2077,91 @@ local function currentAimPoint(part)
     return part.CFrame:PointToWorldSpace(localPoint)
 end
 
+-- Keep the configured FOV angularly consistent across resolutions and optic
+-- zoom. At 1080p / 70 degrees this is exactly the configured pixel value.
+aimServo.screenRadius = function(cam, viewport, multiplier)
+    local heightScale = math.max(viewport.Y, 1) / 1080
+    local cameraFov = math.clamp(tonumber(cam.FieldOfView) or 70, 10, 120)
+    local zoomScale = math.tan(math.rad(35)) / math.tan(math.rad(cameraFov * 0.5))
+    return cfg.AimFov * heightScale * zoomScale * (multiplier or 1)
+end
+
+-- The game launches FastCast projectiles at weapon.vel with Earth gravity
+-- (-9.80665). Predict the replicated target position, then compensate the
+-- projectile drop. This only changes where the mouse aims; LOS continues to
+-- test the real body point, so the predicted point cannot see through cover.
+aimServo.ballisticPoint = function(part, cam)
+    local raw = currentAimPoint(part)
+    local stamp = workspace.DistributedGameTime
+    local entry = aimServo.ballisticCache[part]
+    if not entry then
+        entry = { stamp = -1 }
+        aimServo.ballisticCache[part] = entry
+    end
+    if entry.stamp == stamp and entry.point then return entry.point end
+
+    if aimServo.gunStamp ~= stamp then
+        aimServo.gunStamp, aimServo.gunState = stamp, getGunAimState()
+    end
+    local gun = aimServo.gunState
+    local speed = gun and tonumber(gun.velocity) or 0
+    if speed <= 1 then
+        entry.stamp, entry.point = stamp, raw
+        return raw
+    end
+
+    local measured = part.AssemblyLinearVelocity
+    if measured.Magnitude > 60 then measured = measured.Unit * 60 end
+    entry.velocity = entry.velocity and entry.velocity:Lerp(measured, 0.28) or measured
+    local origin = equippedMuzzlePosition(player.Character) or cam.CFrame.Position
+    local ping = 0
+    pcall(function() ping = math.clamp(player:GetNetworkPing() * 0.5, 0, 0.12) end)
+    local travel = math.clamp((raw - origin).Magnitude / speed, 0, 2)
+    local predicted = raw
+    for _ = 1, 3 do
+        predicted = raw + entry.velocity * (travel + ping)
+        travel = math.clamp((predicted - origin).Magnitude / speed, 0, 2)
+    end
+    predicted = predicted + Vector3.new(0, 0.5 * 9.80665 * travel * travel, 0)
+    entry.stamp, entry.point = stamp, predicted
+    return predicted
+end
+
+aimServo.factionAttributes = { "Faction", "FactionId", "Team", "TeamId" }
+aimServo.modelEligible = function(model, humanoid)
+    if not model or not humanoid or humanoid.Health <= 0 then return false end
+    if model:FindFirstChildOfClass("ForceField") then return false end
+    if humanoid:GetAttribute("Dead") == true or model:GetAttribute("Dead") == true
+        or humanoid:GetAttribute("Invulnerable") == true or model:GetAttribute("Invulnerable") == true
+        or model:GetAttribute("SpawnProtected") == true then
+        return false
+    end
+    local own = player.Character
+    if own and cfg.AimTeamCheck then
+        for _, name in ipairs(aimServo.factionAttributes) do
+            local theirs, ours = model:GetAttribute(name), own:GetAttribute(name)
+            if theirs ~= nil and ours ~= nil and tostring(theirs) ~= "" and theirs == ours then
+                return false
+            end
+        end
+    end
+    return true
+end
+
 local function visibleAimPoint(cam, part)
     local pointMode = cfg.AimTargetPart == "Smart" and "Smart" or "Center"
     if aimPointMode[part] ~= pointMode then
         aimPointMode[part] = pointMode
         aimPointLocal[part] = nil
         aimPointState[part] = nil
+        local cached = aimServo.ballisticCache[part]
+        if cached then cached.stamp = -1 end
     end
     if not cfg.AimLosCheck then
         aimPointLocal[part] = Vector3.zero
         aimPointState[part] = nil
+        local cached = aimServo.ballisticCache[part]
+        if cached then cached.stamp = -1 end
         return part.Position
     end
 
@@ -2121,6 +2213,8 @@ local function visibleAimPoint(cam, part)
     -- pauses instead of steering toward a one-frame opening.
     if typeof(savedOffset) ~= "Vector3" then
         aimPointLocal[part] = replacement
+        local cached = aimServo.ballisticCache[part]
+        if cached then cached.stamp = -1 end
         return replacementPoint
     end
     local state = aimPointState[part]
@@ -2132,6 +2226,8 @@ local function visibleAimPoint(cam, part)
     if now - state.since < aimStyle().pointConfirm then return nil end
     aimPointLocal[part] = replacement
     aimPointState[part] = nil
+    local cached = aimServo.ballisticCache[part]
+    if cached then cached.stamp = -1 end
     return replacementPoint
 end
 
@@ -2164,7 +2260,7 @@ end
 
 local function aimPartWithinRadius(cam, part, center, radius)
     if not center or not radius then return true end
-    local screen, onScreen = cam:WorldToViewportPoint(currentAimPoint(part))
+    local screen, onScreen = cam:WorldToViewportPoint(aimServo.ballisticPoint(part, cam))
     if not onScreen then return false end
     return (Vector2.new(screen.X, screen.Y) - center).Magnitude < radius
 end
@@ -2178,9 +2274,24 @@ local function resolveAimPart(model, cam, center, radius)
         aimPartState[model] = state
     end
 
+    -- A previously selected torso is not a valid candidate after switching the
+    -- mode to Head (and vice versa).
+    if state.mode ~= cfg.AimTargetPart then
+        state.mode = cfg.AimTargetPart
+        state.part, state.candidate, state.candidateAt, state.blockedAt = nil, nil, nil, nil
+    end
+    if state.part then
+        local allowed = false
+        for _, candidate in ipairs(parts) do
+            if candidate == state.part then allowed = true break end
+        end
+        if not allowed then state.part = nil end
+    end
+
     local function usable(part)
-        return part and part.Parent == model and canAimAtPart(cam, part)
+        return part and part.Parent == model
             and aimPartWithinRadius(cam, part, center, radius)
+            and canAimAtPart(cam, part)
     end
     local function firstUsable(startIndex)
         for i = startIndex or 1, #parts do
@@ -2242,14 +2353,18 @@ local function aimScore(hum, screenDistance, worldDistance)
     return screenDistance
 end
 
-local function pickAimTarget(cam, vpSize, myRoot)
+local function pickAimTarget(cam, vpSize, myRoot, excludedModel, preserveLock)
     local center = Vector2.new(vpSize.X / 2, vpSize.Y / 2)
+    local radius = aimServo.screenRadius(cam, vpSize)
+    local gunState = getGunAimState()
+    local maxDistance = math.min(cfg.AimMaxDist, gunState and gunState.maxDistance or cfg.AimMaxDist)
     local bestPlayer, bestPlayerScore = nil, math.huge
     local bestNpc, bestNpcScore = nil, math.huge
     local lockedCandidate, lockedScore = nil, math.huge
 
     for model, d in pairs(cache) do
         local skip = false
+        if model == excludedModel then skip = true end
         if d.isNpc and not cfg.AimTargetNpcs then skip = true end
         if not d.isNpc and not cfg.AimTargetPlayers then skip = true end
         if not skip and not d.isNpc then
@@ -2258,36 +2373,53 @@ local function pickAimTarget(cam, vpSize, myRoot)
         end
         if not skip then
             local hum = model:FindFirstChildOfClass("Humanoid")
-            if not hum or hum.Health <= 0 then skip = true end
+            if not aimServo.modelEligible(model, hum) then skip = true end
             if not skip and not d.isNpc and cfg.AimTeamCheck then
                 local plr = Players:GetPlayerFromCharacter(model)
                 if plr and plr.Team and plr.Team == player.Team then skip = true end
             end
             if not skip then
                 local anchor = model:FindFirstChild("HumanoidRootPart") or model:FindFirstChild("Head")
-                if not anchor or (anchor.Position - myRoot.Position).Magnitude > cfg.AimMaxDist then
+                if not anchor or (anchor.Position - myRoot.Position).Magnitude > maxDistance then
                     skip = true
+                elseif not skip then
+                    -- Cheap screen rejection before multipoint LOS rays. Keep a
+                    -- generous margin because the head can differ from the root.
+                    local anchorScreen, anchorOnScreen = cam:WorldToViewportPoint(anchor.Position)
+                    if not anchorOnScreen or (Vector2.new(anchorScreen.X, anchorScreen.Y) - center).Magnitude > radius * 1.65 then
+                        skip = true
+                    end
                 end
             end
             if not skip then
-                local part = resolveAimPart(model, cam, center, cfg.AimFov)
+                local part = resolveAimPart(model, cam, center, radius)
                 if not part then skip = true end
                 if not skip then
                     local d3 = (part.Position - myRoot.Position).Magnitude
-                    if d3 > cfg.AimMaxDist then skip = true end
+                    if d3 > maxDistance then skip = true end
                     if not skip then
-                        local screen, onScreen = cam:WorldToViewportPoint(currentAimPoint(part))
-                        if onScreen then
-                            local sd = (Vector2.new(screen.X, screen.Y) - center).Magnitude
-                            if sd < cfg.AimFov then
-                                local score = aimScore(hum, sd, d3)
-                                if model == aimLockedModel then
-                                    lockedCandidate, lockedScore = part, score
-                                end
-                                if d.isNpc then
-                                    if score < bestNpcScore then bestNpc, bestNpcScore = part, score end
-                                else
-                                    if score < bestPlayerScore then bestPlayer, bestPlayerScore = part, score end
+                        local rawPoint = currentAimPoint(part)
+                        local projectedPoint = aimServo.ballisticPoint(part, cam)
+                        -- A moving target can be visible now while its required
+                        -- lead point is already behind a wall. Validate both.
+                        if cfg.AimLosCheck and (projectedPoint - rawPoint).Magnitude > 0.15
+                            and not hasAimLineOfSight(cam, part, projectedPoint) then
+                            skip = true
+                        end
+                        if not skip then
+                            local screen, onScreen = cam:WorldToViewportPoint(projectedPoint)
+                            if onScreen then
+                                local sd = (Vector2.new(screen.X, screen.Y) - center).Magnitude
+                                if sd < radius then
+                                    local score = aimScore(hum, sd, d3)
+                                    if model == aimLockedModel then
+                                        lockedCandidate, lockedScore = part, score
+                                    end
+                                    if d.isNpc then
+                                        if score < bestNpcScore then bestNpc, bestNpcScore = part, score end
+                                    else
+                                        if score < bestPlayerScore then bestPlayer, bestPlayerScore = part, score end
+                                    end
                                 end
                             end
                         end
@@ -2314,10 +2446,15 @@ local function pickAimTarget(cam, vpSize, myRoot)
         local closeEnough = not chosen
             or lockedScore <= chosenScore * tuning.switchRatio + tuning.switchBonus
         if youngLock or closeEnough then chosen = lockedCandidate end
+    elseif lockedCandidate and os.clock() - aimLockedAt < 0.05
+        and (not chosen or lockedScore <= chosenScore + 2) then
+        -- Even with retention disabled, suppress one-frame ordering jitter when
+        -- two NPCs overlap. This is not a persistent lock and expires in 50 ms.
+        chosen = lockedCandidate
     end
 
     local chosenModel = chosen and chosen:FindFirstAncestorOfClass("Model")
-    if chosenModel ~= aimLockedModel then
+    if not preserveLock and chosenModel ~= aimLockedModel then
         aimLockedModel = chosenModel
         aimLockedAt = os.clock()
     end
@@ -2335,17 +2472,26 @@ local function isTargetStillValid(cam, myRoot)
     if wp and aimWhitelist[wp.UserId] then return false end
     if wp and cfg.AimTeamCheck and wp.Team and wp.Team == player.Team then return false end
     local hum = model:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
+    if not aimServo.modelEligible(model, hum) then return false end
     local d3 = (aimTarget.Position - myRoot.Position).Magnitude
-    if d3 > cfg.AimMaxDist then return false end
+    local gunState = getGunAimState()
+    if d3 > math.min(cfg.AimMaxDist, gunState and gunState.maxDistance or cfg.AimMaxDist) then return false end
 
     local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
     local breakMultiplier = cfg.AimRetention == "Hard" and 1.75 or 1.25
-    local gunState = getGunAimState()
+    local radius = aimServo.screenRadius(cam, cam.ViewportSize)
     if cfg.AimTargetPart == "Smart" and gunState and gunState.recovering then
         breakMultiplier = breakMultiplier + 0.5 * gunState.recoilFactor
     end
-    local visiblePart = resolveAimPart(model, cam, center, cfg.AimFov * breakMultiplier)
+    local visiblePart = resolveAimPart(model, cam, center, radius * breakMultiplier)
+    if visiblePart and cfg.AimLosCheck then
+        local rawPoint = currentAimPoint(visiblePart)
+        local projectedPoint = aimServo.ballisticPoint(visiblePart, cam)
+        if (projectedPoint - rawPoint).Magnitude > 0.15
+            and not hasAimLineOfSight(cam, visiblePart, projectedPoint) then
+            visiblePart = nil
+        end
+    end
     if visiblePart then
         aimTarget = visiblePart
         aimTargetVisible = true
@@ -2357,10 +2503,10 @@ local function isTargetStillValid(cam, myRoot)
         if os.clock() - aimOccludedAt > grace then return false end
     end
 
-    local screen, onScreen = cam:WorldToViewportPoint(currentAimPoint(aimTarget))
+    local screen, onScreen = cam:WorldToViewportPoint(aimServo.ballisticPoint(aimTarget, cam))
     if not onScreen then return false end
     local screenDistance = (Vector2.new(screen.X, screen.Y) - center).Magnitude
-    if screenDistance > cfg.AimFov * breakMultiplier then return false end
+    if screenDistance > radius * breakMultiplier then return false end
     return true
 end
 
@@ -2404,6 +2550,9 @@ local function automaticGunProfile(tool)
         aimRecoilReduction = math.max(tonumber(recoil.aimRecoilReduction) or 1, 1),
         penetrationDepth = math.max(tonumber(data.penetrate_depth) or 0, 0),
         pierceBudget = math.max(tonumber(damage[2] or damage[1]) or 0, 0) / 20,
+        velocity = math.max(tonumber(data.vel) or 0, 0),
+        maxDistance = math.max(tonumber(data.maxDistance) or 2000, 1),
+        cartridge = data.cartridge,
         sniper = data.sniper == true,
         shotgun = data.shotgun == true or (tonumber(data.amountPerRound) or 1) > 1,
     }
@@ -2420,6 +2569,8 @@ getGunAimState = function()
         recoilFactor = 1,
         penetrationDepth = 0,
         pierceBudget = 0,
+        velocity = tonumber(tool:GetAttribute("Velocity")) or 0,
+        maxDistance = 2000,
         sniper = false,
         shotgun = false,
     }
@@ -2458,6 +2609,9 @@ getGunAimState = function()
         recoilFactor = recoilFactor,
         penetrationDepth = profile.penetrationDepth,
         pierceBudget = profile.pierceBudget,
+        velocity = profile.velocity,
+        maxDistance = profile.maxDistance,
+        cartridge = profile.cartridge,
         ads = ads,
         sniper = profile.sniper,
         shotgun = profile.shotgun,
@@ -2474,7 +2628,7 @@ local function whitelistNearestPlayer()
     local myRoot = myChar and myChar:FindFirstChild("HumanoidRootPart")
     if not myRoot then return end
 
-    local best, bestSd = nil, cfg.AimFov
+    local best, bestSd = nil, aimServo.screenRadius(cam, vp)
     for _, plr in ipairs(Players:GetPlayers()) do
         if plr ~= player and plr.Character then
             local part = plr.Character:FindFirstChild("Head")
@@ -2566,6 +2720,7 @@ aimTrace.recordFrame = function(stage, cam, myRoot, dx, dy, commandX, commandY, 
     aimTrace.previousLook = look
     local model = aimTarget and aimTarget:FindFirstAncestorOfClass("Model")
     local point = aimTarget and currentAimPoint(aimTarget)
+    local predicted = aimTarget and aimServo.ballisticPoint(aimTarget, cam)
     local velocity = aimTarget and aimTarget.AssemblyLinearVelocity or Vector3.zero
     local distance = point and myRoot and (point - myRoot.Position).Magnitude or -1
     local tool = gunState and gunState.tool
@@ -2588,6 +2743,9 @@ aimTrace.recordFrame = function(stage, cam, myRoot, dx, dy, commandX, commandY, 
         weapon = tool and tool.Name or "",
         damping = math.floor(aimServo.damping * 1000 + 0.5) / 1000,
         mouseGain = math.floor(aimServo.mouseGain * 1000 + 0.5) / 1000,
+        mouseGainX = math.floor(aimServo.mouseGainX * 1000 + 0.5) / 1000,
+        mouseGainY = math.floor(aimServo.mouseGainY * 1000 + 0.5) / 1000,
+        bulletVelocity = gunState and gunState.velocity or 0,
         cameraDelta = math.floor(cameraDelta * 10000 + 0.5) / 10000,
         cameraX = math.floor(look.X * 100000 + 0.5) / 100000,
         cameraY = math.floor(look.Y * 100000 + 0.5) / 100000,
@@ -2596,6 +2754,9 @@ aimTrace.recordFrame = function(stage, cam, myRoot, dx, dy, commandX, commandY, 
         pointX = point and math.floor(point.X * 100 + 0.5) / 100 or nil,
         pointY = point and math.floor(point.Y * 100 + 0.5) / 100 or nil,
         pointZ = point and math.floor(point.Z * 100 + 0.5) / 100 or nil,
+        leadX = predicted and point and math.floor((predicted.X - point.X) * 100 + 0.5) / 100 or nil,
+        leadY = predicted and point and math.floor((predicted.Y - point.Y) * 100 + 0.5) / 100 or nil,
+        leadZ = predicted and point and math.floor((predicted.Z - point.Z) * 100 + 0.5) / 100 or nil,
         velocityX = math.floor(velocity.X * 100 + 0.5) / 100,
         velocityY = math.floor(velocity.Y * 100 + 0.5) / 100,
         velocityZ = math.floor(velocity.Z * 100 + 0.5) / 100,
@@ -2608,15 +2769,18 @@ aimServo.reset = function()
     aimServo.model, aimServo.part = nil, nil
     aimServo.prevDx, aimServo.prevDy = nil, nil
     aimServo.damping, aimServo.brakeUntil, aimServo.stableFrames = 1, 0, 0
-    aimServo.mouseGain = 3.6
+    aimServo.mouseGainX = aimServo.mouseGainX or 3.6
+    aimServo.mouseGainY = aimServo.mouseGainY or 3.6
+    aimServo.mouseGain = (aimServo.mouseGainX + aimServo.mouseGainY) * 0.5
     aimServo.commandX, aimServo.commandY, aimServo.commandAt = nil, nil, 0
     aimServo.residualX, aimServo.residualY = 0, 0
 end
 
 local function updateAim(dt, cam, vpSize, myRoot)
     if cfg.AimEnabled and cfg.AimShowFov then
+        local radius = aimServo.screenRadius(cam, vpSize)
         fovCircle.Position = UDim2.fromOffset(vpSize.X / 2, vpSize.Y / 2)
-        fovCircle.Size = UDim2.fromOffset(cfg.AimFov * 2, cfg.AimFov * 2)
+        fovCircle.Size = UDim2.fromOffset(radius * 2, radius * 2)
         fovCircle.Visible = true
     else
         fovCircle.Visible = false
@@ -2651,7 +2815,20 @@ local function updateAim(dt, cam, vpSize, myRoot)
     end
 
     if cfg.AimRetention ~= "Off" and aimTarget then
-        if not isTargetStillValid(cam, myRoot) then
+        local valid = isTargetStillValid(cam, myRoot)
+        if valid and not aimTargetVisible then
+            -- Do not freeze on an occluded retained target. During its short
+            -- grace window, acquire another genuinely visible enemy; retain the
+            -- old one only when no replacement exists.
+            local oldModel = aimTarget:FindFirstAncestorOfClass("Model")
+            local replacement = pickAimTarget(cam, vpSize, myRoot, oldModel, true)
+            if replacement then
+                aimTarget = replacement
+                aimTargetVisible, aimOccludedAt = true, nil
+                aimLockedModel = replacement:FindFirstAncestorOfClass("Model")
+                aimLockedAt = os.clock()
+            end
+        elseif not valid then
             aimTarget = pickAimTarget(cam, vpSize, myRoot)
             aimTargetVisible = aimTarget ~= nil
             aimOccludedAt = nil
@@ -2687,7 +2864,7 @@ local function updateAim(dt, cam, vpSize, myRoot)
     -- writing Camera.CFrame gets overwritten — instead we nudge the OS mouse and
     -- let the game's own camera turn. Closed loop: each frame we re-measure the
     -- gap and cover a fraction of it, so it converges regardless of sensitivity.
-    local screen, onScreen = cam:WorldToViewportPoint(currentAimPoint(aimTarget))
+    local screen, onScreen = cam:WorldToViewportPoint(aimServo.ballisticPoint(aimTarget, cam))
     if not onScreen then
         aimServo.commandX, aimServo.commandY = nil, nil
         aimTrace.recordFrame("offscreen", cam, myRoot, nil, nil, nil, nil, getGunAimState())
@@ -2698,6 +2875,15 @@ local function updateAim(dt, cam, vpSize, myRoot)
     aimTrace.movement(dx, dy, cam, myRoot)
     local gunState = getGunAimState()
     local tuning = aimStyle()
+    local profileKey = (gunState and gunState.tool and gunState.tool.Name or "none")
+        .. ":" .. tostring(math.floor((cam.FieldOfView + 2.5) / 5) * 5)
+    if aimServo.profileKey ~= profileKey then
+        aimServo.profileKey = profileKey
+        local savedGain = aimServo.gainProfiles[profileKey]
+        aimServo.mouseGainX = savedGain and savedGain.x or 3.6
+        aimServo.mouseGainY = savedGain and savedGain.y or 3.6
+        aimServo.mouseGain = (aimServo.mouseGainX + aimServo.mouseGainY) * 0.5
+    end
     local targetModel = aimTarget:FindFirstAncestorOfClass("Model")
     if aimServo.model ~= targetModel or aimServo.part ~= aimTarget then
         aimServo.reset()
@@ -2717,17 +2903,26 @@ local function updateAim(dt, cam, vpSize, myRoot)
     -- trace showed ~3.6 pixels per mouse unit in ADS, while the old controller
     -- assumed 1:1 and therefore overshot by more than 2x in Super Rage.
     if aimServo.commandX and aimServo.prevDx and now - aimServo.commandAt <= 0.05 then
-        local commandSq = aimServo.commandX ^ 2 + aimServo.commandY ^ 2
-        if commandSq >= 0.5 then
-            local observedGain = ((aimServo.prevDx - dx) * aimServo.commandX
-                + (aimServo.prevDy - dy) * aimServo.commandY) / commandSq
-            if observedGain >= 0.25 and observedGain <= 12 then
-                aimServo.mouseGain = aimServo.mouseGain * 0.82 + math.clamp(observedGain, 0.75, 8) * 0.18
+        if math.abs(aimServo.commandX) >= 1 then
+            local observedX = (aimServo.prevDx - dx) / aimServo.commandX
+            if observedX >= 0.25 and observedX <= 12 then
+                observedX = math.clamp(observedX, aimServo.mouseGainX * 0.72, aimServo.mouseGainX * 1.28)
+                aimServo.mouseGainX = aimServo.mouseGainX * 0.9 + observedX * 0.1
             end
         end
+        if math.abs(aimServo.commandY) >= 1 then
+            local observedY = (aimServo.prevDy - dy) / aimServo.commandY
+            if observedY >= 0.25 and observedY <= 12 then
+                observedY = math.clamp(observedY, aimServo.mouseGainY * 0.72, aimServo.mouseGainY * 1.28)
+                aimServo.mouseGainY = aimServo.mouseGainY * 0.9 + observedY * 0.1
+            end
+        end
+        aimServo.mouseGain = (aimServo.mouseGainX + aimServo.mouseGainY) * 0.5
+        aimServo.gainProfiles[profileKey] = { x = aimServo.mouseGainX, y = aimServo.mouseGainY }
     end
     local crossed = aimServo.prevDx ~= nil and magnitude > 1.5 and previousMagnitude > 1.5
-        and (dx * aimServo.prevDx + dy * aimServo.prevDy) < 0
+        and ((math.abs(dx) > 1.5 and math.abs(aimServo.prevDx) > 1.5 and dx * aimServo.prevDx < 0)
+            or (math.abs(dy) > 1.5 and math.abs(aimServo.prevDy) > 1.5 and dy * aimServo.prevDy < 0))
     if crossed then
         local zoomed = (gunState and gunState.ads) or cam.FieldOfView < 35
         aimServo.damping = math.max(aimServo.damping * (zoomed and 0.32 or 0.48), 0.12)
@@ -2782,9 +2977,8 @@ local function updateAim(dt, cam, vpSize, myRoot)
         maxStep = math.min(maxStep * (1 + strength * 0.7), 120)
     end
     local alpha = 1 - math.exp(-(dt or 0.016) * rate)
-    local calibratedGain = math.max(aimServo.mouseGain, 0.75)
-    local moveX = dx * alpha * aimServo.damping / calibratedGain
-    local moveY = dy * alpha * aimServo.damping / calibratedGain
+    local moveX = dx * alpha * aimServo.damping / math.max(aimServo.mouseGainX, 0.75)
+    local moveY = dy * alpha * aimServo.damping / math.max(aimServo.mouseGainY, 0.75)
     local moveMagnitude = math.sqrt(moveX * moveX + moveY * moveY)
     if moveMagnitude > maxStep and moveMagnitude > 0 then
         local scale = maxStep / moveMagnitude
@@ -3103,6 +3297,7 @@ local function cleanup(fromWindow)
         getgenv().__HAKO_CLEANUP = nil
         getgenv().__HAKO_CONFIG_API = nil
         getgenv().__HAKO_AIM_TRACE = nil
+        getgenv().__HAKO_AIM_DEBUG = nil
     end
     if Window and not fromWindow then pcall(function() Window:Unload() end) end
 end
@@ -3429,6 +3624,25 @@ cfgR:Button({ Name = "Выгрузить скрипт", Callback = function() cl
 end
 
 if getgenv then
+    getgenv().__HAKO_AIM_DEBUG = {
+        Status = function()
+            local cam = workspace.CurrentCamera
+            local gun = getGunAimState()
+            local raw = aimTarget and currentAimPoint(aimTarget)
+            local predicted = aimTarget and cam and aimServo.ballisticPoint(aimTarget, cam)
+            return {
+                target = aimTarget and aimTarget:GetFullName() or "",
+                visible = aimTargetVisible == true,
+                weapon = gun and gun.tool and gun.tool.Name or "",
+                velocity = gun and gun.velocity or 0,
+                ads = gun and gun.ads == true or false,
+                gainX = aimServo.mouseGainX,
+                gainY = aimServo.mouseGainY,
+                raw = raw and { raw.X, raw.Y, raw.Z } or nil,
+                predicted = predicted and { predicted.X, predicted.Y, predicted.Z } or nil,
+            }
+        end,
+    }
     getgenv().__HAKO_CONFIG_API = {
         Save = function(name) return MacLib:SaveConfig(name) end,
         Load = function(name) return MacLib:LoadConfig(name) end,
