@@ -2477,11 +2477,14 @@ aimServo.ballisticPoint = function(part, cam)
     local origin = equippedMuzzlePosition(player.Character) or cam.CFrame.Position
     local ping = 0
     pcall(function() ping = math.clamp(player:GetNetworkPing() * 0.5, 0, 0.12) end)
-    local travel = math.clamp((raw - origin).Magnitude / speed, 0, 2)
+    -- Long shots can exceed two seconds (M4A1: 900 studs/s). The previous hard
+    -- clamp under-led moving targets and under-compensated drop past ~1800m.
+    local maxTravel = gun.maxDistance and math.clamp(gun.maxDistance / speed + 0.25, 2, 6) or 6
+    local travel = math.clamp((raw - origin).Magnitude / speed, 0, maxTravel)
     local predicted = raw
     for _ = 1, 3 do
         predicted = raw + entry.velocity * (travel + ping)
-        travel = math.clamp((predicted - origin).Magnitude / speed, 0, 2)
+        travel = math.clamp((predicted - origin).Magnitude / speed, 0, maxTravel)
     end
     predicted = predicted + Vector3.new(0, 0.5 * 9.80665 * travel * travel, 0)
     entry.stamp, entry.point = stamp, predicted
@@ -2596,7 +2599,7 @@ local function canAimAtPart(cam, part)
     return visibleAimPoint(cam, part) ~= nil
 end
 
-local function aimParts(model, nearestToCrosshair)
+local function aimParts(model, nearestToCrosshair, silentLegacy)
     local result, seen = {}, {}
     local function add(name)
         local part = model:FindFirstChild(name)
@@ -2606,7 +2609,12 @@ local function aimParts(model, nearestToCrosshair)
         end
     end
     local mode = cfg.AimTargetPart
-    if nearestToCrosshair then
+    if silentLegacy then
+        -- Classic Silent mode is deliberately deterministic: head only. It
+        -- must not inherit the regular Aim dropdown (Smart/Body), otherwise
+        -- switching the smart Silent toggle off can still select the torso.
+        add("Head")
+    elseif nearestToCrosshair then
         -- Stable combat zones for both R15 and R6 rigs. Hands/feet are omitted:
         -- their tiny moving hitboxes cause unnecessary limb-to-limb jitter.
         add("Head")
@@ -2624,7 +2632,7 @@ local function aimParts(model, nearestToCrosshair)
     else
         add("Head")
     end
-    if #result == 0 then add("HumanoidRootPart"); add("UpperTorso"); add("Torso") end
+    if #result == 0 and not silentLegacy then add("HumanoidRootPart"); add("UpperTorso"); add("Torso") end
     return result
 end
 
@@ -2921,7 +2929,10 @@ local function automaticGunProfile(tool)
         penetrationDepth = math.max(tonumber(data.penetrate_depth) or 0, 0),
         pierceBudget = math.max(tonumber(damage[2] or damage[1]) or 0, 0) / 20,
         velocity = math.max(tonumber(data.vel) or 0, 0),
-        maxDistance = math.max(tonumber(data.maxDistance) or 2000, 1),
+        -- Many weapons (including M4A1) do not declare maxDistance. Nil means
+        -- "use the user's Aim distance"; inventing a 2000-stud cap silently
+        -- disabled otherwise valid long-range targets.
+        maxDistance = tonumber(data.maxDistance) and math.max(tonumber(data.maxDistance), 1) or nil,
         cartridge = data.cartridge,
         sniper = data.sniper == true,
         shotgun = data.shotgun == true or (tonumber(data.amountPerRound) or 1) > 1,
@@ -2940,7 +2951,7 @@ getGunAimState = function()
         penetrationDepth = 0,
         pierceBudget = 0,
         velocity = tonumber(tool:GetAttribute("Velocity")) or 0,
-        maxDistance = 2000,
+        maxDistance = tonumber(tool:GetAttribute("MaxDistance")),
         sniper = false,
         shotgun = false,
     }
@@ -3015,7 +3026,14 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
     end
 
     local maxDistance = math.min(cfg.AimMaxDist or 1500, gun.maxDistance or 2000)
-    local silentRadius = math.clamp(tonumber(cfg.SilentAimFovPx) or 250, 50, 600)
+    local baseSilentRadius = math.clamp(tonumber(cfg.SilentAimFovPx) or 250, 50, 600)
+    -- Preserve the same angular acquisition cone through magnified optics.
+    -- A fixed pixel radius becomes much narrower when camera FOV drops.
+    local cameraFov = math.clamp(tonumber(cam.FieldOfView) or 70, 10, 120)
+    local zoomScale = math.tan(math.rad(35)) / math.tan(math.rad(cameraFov * 0.5))
+    local viewportScale = math.max(cam.ViewportSize.Y, 1) / 1080
+    local silentRadius = math.clamp(baseSilentRadius * viewportScale * math.max(zoomScale, 1),
+        50, math.min(1200, cam.ViewportSize.X * 0.48))
     local screenCenter = cam.ViewportSize / 2
     local bestPart, bestPoint, bestScore = nil, nil, math.huge
     local now = os.clock()
@@ -3048,7 +3066,7 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
             local nearestMode = cfg.SilentSmartPart == true
             local modelPart, modelPoint, modelPartScore = nil, nil, math.huge
             local modelScreenDistance, modelDistance = math.huge, math.huge
-            for _, part in ipairs(aimParts(model, nearestMode)) do
+            for _, part in ipairs(aimParts(model, nearestMode, not nearestMode)) do
                 local coarseScreen, coarseOnScreen = cam:WorldToViewportPoint(part.Position)
                 local coarseDistance = coarseOnScreen
                     and (Vector2.new(coarseScreen.X, coarseScreen.Y) - screenCenter).Magnitude or math.huge
@@ -3078,8 +3096,8 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
                                 modelPart, modelPoint, modelPartScore = part, predicted, partScore
                                 modelScreenDistance, modelDistance = screenDistance, desired.Magnitude
                             end
-                            -- The legacy path preserves the selected-part order
-                            -- (Head -> torso). Smart Silent evaluates every zone.
+                            -- Classic Silent has a single deterministic Head;
+                            -- Smart Silent evaluates every stable combat zone.
                             if not nearestMode then break end
                         end
                     end
@@ -3087,10 +3105,15 @@ aimServo.pickSilentDirection = function(origin, originalDirection)
             end
             if modelPart then
                 local score = aimScore(humanoid, modelScreenDistance, modelDistance)
+                -- Match the regular Aim preference. Category weight is applied
+                -- before lock retention so a briefly locked NPC can never steal
+                -- a shot from a valid player when "Prefer players" is enabled.
+                local categoryBase = cfg.AimPreferPlayers and data.isNpc and 1e9 or 0
                 if model == aimServo.silent.lockedModel
                     and now - aimServo.silent.lockedAt <= aimServo.silent.hold then
-                    -- Retain the target model while its chosen zone is shootable.
-                    score = -math.huge
+                    score = categoryBase - 1e8
+                else
+                    score = categoryBase + score
                 end
                 if score < bestScore then
                     bestPart, bestPoint, bestScore = modelPart, modelPoint, score
@@ -3195,6 +3218,9 @@ aimServo.updateNativeSilent = function(cam)
     local origin = equippedMuzzlePosition(character) or fireDir.WorldPosition
     local direction, targetPart = aimServo.pickSilentDirection(origin, cam.CFrame.LookVector)
     if not direction then
+        -- Consume LastFired while no target is active. Otherwise a miss made
+        -- outside Silent FOV can be counted later when a target enters it.
+        state.lastFired = tool:GetAttribute("LastFired")
         if state.fireDir and state.fireDirCFrame
             and (not state.appliedFireDirCFrame or state.fireDir.CFrame == state.appliedFireDirCFrame) then
             state.fireDir.CFrame = state.fireDirCFrame
@@ -4301,7 +4327,7 @@ aimLft:Toggle({ Name = "Показывать круг FOV", Default = guiDefault
 aimLft:Slider({ Name = "Радиус FOV", Default = guiDefault("AimFov", 80),
     Minimum = 10, Maximum = 300, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimFov = v end }, "aimFov")
-aimLft:Slider({ Name = "Дальность Aim", Default = guiDefault("AimMaxDist", 1500),
+aimLft:Slider({ Name = "Дальность Aim / Silent", Default = guiDefault("AimMaxDist", 1500),
     Minimum = 50, Maximum = 5000, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimMaxDist = v end }, "aimMaxDist")
 aimLft:Header({ Name = "Стиль наведения" })
@@ -4334,12 +4360,12 @@ aimLft:Toggle({ Name = "Включить Silent Aim", Default = guiDefault("Sile
         end
         ensureRender()
     end }, "silentEnabled")
-aimLft:Slider({ Name = "Радиус Silent Aim", Default = guiDefault("SilentAimFovPx", 250),
+aimLft:Slider({ Name = "Базовый радиус Silent Aim", Default = guiDefault("SilentAimFovPx", 250),
     Minimum = 50, Maximum = 600, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.SilentAimFovPx = v end }, "silentFovPx")
 aimLft:Toggle({ Name = "Умный выбор части тела", Default = guiDefault("SilentSmartPart", true),
     Callback = function(v) cfg.SilentSmartPart = v == true end }, "silentSmartPart")
-aimLft:Label({ Text = "Радиус считается в пикселях от центра экрана." })
+aimLft:Label({ Text = "250 px при FOV 70; в оптике радиус масштабируется автоматически." })
 aimLft:Label({ Text = "Выбирает ближайшую к прицелу видимую часть тела." })
 aimLft:Label({ Text = "Всегда 100% • ADS не требуется • удерживает одну цель" })
 aimLft:Label({ Text = "Использует штатные FireDir/aimPos оружия; гарантий от античита нет." })
@@ -4405,10 +4431,19 @@ do
     runtime.SilentDebug = {
         Status = function()
             local state = aimServo.silent
+            local cam = workspace.CurrentCamera
+            local cameraFov = cam and math.clamp(tonumber(cam.FieldOfView) or 70, 10, 120) or 70
+            local baseRadius = math.clamp(tonumber(cfg.SilentAimFovPx) or 250, 50, 600)
+            local zoomScale = math.tan(math.rad(35)) / math.tan(math.rad(cameraFov * 0.5))
+            local viewport = cam and cam.ViewportSize or Vector2.new(1920, 1080)
+            local effectiveRadius = math.clamp(baseRadius * (math.max(viewport.Y, 1) / 1080) * math.max(zoomScale, 1),
+                50, math.min(1200, viewport.X * 0.48))
             return {
                 enabled = cfg.SilentAimEnabled == true,
                 installed = state.installed == true,
-                fovPx = tonumber(cfg.SilentAimFovPx) or 250,
+                fovPx = baseRadius,
+                effectiveFovPx = effectiveRadius,
+                cameraFov = cameraFov,
                 redirected = state.redirected,
                 lastTarget = state.lastTarget,
                 lastPart = state.lockedPart and state.lockedPart.Name or "",
