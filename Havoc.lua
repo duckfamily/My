@@ -1504,6 +1504,7 @@ local aimTarget = nil
 local aimOccludedAt = nil
 local aimMouseWarningShown = false
 local smartHeadBlockedAt = setmetatable({}, { __mode = "k" })
+local aimPointLocal = setmetatable({}, { __mode = "k" })
 local gunProfileCache = setmetatable({}, { __mode = "k" })
 local getGunAimState = function() return nil end
 local aimWhitelist = {}  -- [UserId] = true; aim ignores these players
@@ -1537,18 +1538,28 @@ local aimRayParams = RaycastParams.new()
 aimRayParams.FilterType = Enum.RaycastFilterType.Exclude
 aimRayParams.IgnoreWater = true
 
-local function hasAimLineOfSight(cam, targetPart)
+local AIM_STYLE = {
+    Legit = { smoothness = 7, deadzone = 2, maxStep = 18, recoil = 0.75, spreadDeadzone = 2.5 },
+    Rage = { smoothness = 3, deadzone = 0.8, maxStep = 40, recoil = 1.05, spreadDeadzone = 1.25 },
+    SuperRage = { smoothness = 1, deadzone = 0, maxStep = 80, recoil = 1.35, spreadDeadzone = 0.25 },
+}
+local function aimStyle()
+    return AIM_STYLE[cfg.AimStyle] or AIM_STYLE.Legit
+end
+
+local function hasAimLineOfSight(cam, targetPart, targetPosition)
     local filter = {}
     local character = player.Character
     if character then filter[#filter + 1] = character end
     filter[#filter + 1] = cam
     local origin = cam.CFrame.Position
+    targetPosition = targetPosition or targetPart.Position
 
     -- Skip a few non-collidable decorative hits (grass, effects, loose visual
     -- meshes). Solid and invisible colliders still block the aim ray.
     for _ = 1, 6 do
         aimRayParams.FilterDescendantsInstances = filter
-        local result = workspace:Raycast(origin, targetPart.Position - origin, aimRayParams)
+        local result = workspace:Raycast(origin, targetPosition - origin, aimRayParams)
         if not result then return true end
         local hit = result.Instance
         if hit and hit:IsDescendantOf(targetPart.Parent) then return true end
@@ -1559,6 +1570,50 @@ local function hasAimLineOfSight(cam, targetPart)
         end
     end
     return false
+end
+
+local function currentAimPoint(part)
+    local localPoint = aimPointLocal[part]
+    if typeof(localPoint) ~= "Vector3" then return part.Position end
+    return part.CFrame:PointToWorldSpace(localPoint)
+end
+
+local function visibleAimPoint(cam, part)
+    if not cfg.AimLosCheck then
+        aimPointLocal[part] = Vector3.zero
+        return part.Position
+    end
+
+    local size = part.Size
+    local offsets = { Vector3.zero }
+    if cfg.AimTargetPart == "Smart" then
+        if part.Name == "Head" then
+            offsets[#offsets + 1] = Vector3.new(0, size.Y * 0.24, 0)
+            offsets[#offsets + 1] = Vector3.new(-size.X * 0.28, size.Y * 0.08, 0)
+            offsets[#offsets + 1] = Vector3.new(size.X * 0.28, size.Y * 0.08, 0)
+            offsets[#offsets + 1] = Vector3.new(0, 0, -size.Z * 0.24)
+            offsets[#offsets + 1] = Vector3.new(0, 0, size.Z * 0.24)
+            offsets[#offsets + 1] = Vector3.new(0, -size.Y * 0.2, 0)
+        else
+            offsets[#offsets + 1] = Vector3.new(0, size.Y * 0.22, 0)
+            offsets[#offsets + 1] = Vector3.new(-size.X * 0.25, 0, 0)
+            offsets[#offsets + 1] = Vector3.new(size.X * 0.25, 0, 0)
+            offsets[#offsets + 1] = Vector3.new(0, -size.Y * 0.2, 0)
+        end
+    end
+
+    for _, offset in ipairs(offsets) do
+        local point = part.CFrame:PointToWorldSpace(offset)
+        if hasAimLineOfSight(cam, part, point) then
+            aimPointLocal[part] = offset
+            return point
+        end
+    end
+    return nil
+end
+
+local function canAimAtPart(cam, part)
+    return visibleAimPoint(cam, part) ~= nil
 end
 
 local function aimParts(model)
@@ -1588,19 +1643,19 @@ local function resolveAimPart(model, cam)
     local parts = aimParts(model)
     if cfg.AimTargetPart == "Smart" and parts[1] and parts[1].Name == "Head" then
         local head = parts[1]
-        if not cfg.AimLosCheck or hasAimLineOfSight(cam, head) then
+        if canAimAtPart(cam, head) then
             smartHeadBlockedAt[model] = nil
             return head
         end
         smartHeadBlockedAt[model] = smartHeadBlockedAt[model] or os.clock()
         if os.clock() - smartHeadBlockedAt[model] < 0.18 then return nil end
         for i = 2, #parts do
-            if not cfg.AimLosCheck or hasAimLineOfSight(cam, parts[i]) then return parts[i] end
+            if canAimAtPart(cam, parts[i]) then return parts[i] end
         end
         return nil
     end
     for _, part in ipairs(parts) do
-        if not cfg.AimLosCheck or hasAimLineOfSight(cam, part) then return part end
+        if canAimAtPart(cam, part) then return part end
     end
     return nil
 end
@@ -1650,7 +1705,7 @@ local function pickAimTarget(cam, vpSize, myRoot)
                     local d3 = (part.Position - myRoot.Position).Magnitude
                     if d3 > cfg.AimMaxDist then skip = true end
                     if not skip then
-                        local screen, onScreen = cam:WorldToViewportPoint(part.Position)
+                        local screen, onScreen = cam:WorldToViewportPoint(currentAimPoint(part))
                         if onScreen then
                             local sd = (Vector2.new(screen.X, screen.Y) - center).Magnitude
                             if sd < cfg.AimFov then
@@ -1697,13 +1752,13 @@ local function isTargetStillValid(cam, myRoot)
         if os.clock() - aimOccludedAt > grace then return false end
     end
 
-    local screen, onScreen = cam:WorldToViewportPoint(aimTarget.Position)
+    local screen, onScreen = cam:WorldToViewportPoint(currentAimPoint(aimTarget))
     if not onScreen then return false end
     local center = Vector2.new(cam.ViewportSize.X / 2, cam.ViewportSize.Y / 2)
     local screenDistance = (Vector2.new(screen.X, screen.Y) - center).Magnitude
     local breakMultiplier = cfg.AimRetention == "Hard" and 1.75 or 1.25
     local gunState = getGunAimState()
-    if cfg.AimRecoilCompensation and gunState and gunState.recovering then
+    if cfg.AimTargetPart == "Smart" and gunState and gunState.recovering then
         breakMultiplier = breakMultiplier + 0.5 * gunState.recoilFactor
     end
     if screenDistance > cfg.AimFov * breakMultiplier then return false end
@@ -1746,6 +1801,7 @@ local function automaticGunProfile(tool)
         fireRate = math.max(fireRate, 1),
         recoveryTime = math.clamp(math.max(tonumber(recoil.punchRecover) or 0.15, 60 / math.max(fireRate, 1) * 1.35), 0.08, 0.55),
         recoilFactor = math.clamp(((minPower + maxPower) * 0.5) / 4 + punch * 0.65, 0.35, 2.5),
+        aimRecoilReduction = math.max(tonumber(recoil.aimRecoilReduction) or 1, 1),
         shotgun = data.shotgun == true or (tonumber(data.amountPerRound) or 1) > 1,
     }
     gunProfileCache[configModule] = profile
@@ -1764,11 +1820,18 @@ getGunAimState = function()
     local lastFired = tonumber(tool:GetAttribute("LastFired"))
     local shotAge = lastFired and (os.clock() - lastFired) or math.huge
     local heat = math.clamp(tonumber(tool:GetAttribute("RateHeat")) or 0, 0, 1)
+    local character = player.Character
+    local ads = shared.aim == true or (character and character:GetAttribute("aim") == true)
+    local recoilFactor = profile.recoilFactor
+    if cfg.AimTargetPart == "Smart" and ads then
+        recoilFactor = recoilFactor / profile.aimRecoilReduction
+    end
     return {
         tool = tool,
         heat = heat,
         recovering = shotAge >= 0 and shotAge <= profile.recoveryTime,
-        recoilFactor = profile.recoilFactor,
+        recoilFactor = recoilFactor,
+        ads = ads,
         shotgun = profile.shotgun,
     }
 end
@@ -1868,22 +1931,23 @@ local function updateAim(dt, cam, vpSize, myRoot)
     -- writing Camera.CFrame gets overwritten — instead we nudge the OS mouse and
     -- let the game's own camera turn. Closed loop: each frame we re-measure the
     -- gap and cover a fraction of it, so it converges regardless of sensitivity.
-    local screen, onScreen = cam:WorldToViewportPoint(aimTarget.Position)
+    local screen, onScreen = cam:WorldToViewportPoint(currentAimPoint(aimTarget))
     if not onScreen then return end
     local dx = screen.X - vpSize.X / 2
     local dy = screen.Y - vpSize.Y / 2
     local gunState = getGunAimState()
-    local deadzone = cfg.AimDeadzone
-    if cfg.AimSpreadStabilization and gunState then
-        deadzone = deadzone + gunState.heat * cfg.AimSpreadDeadzone
+    local tuning = aimStyle()
+    local deadzone = tuning.deadzone
+    if cfg.AimTargetPart == "Smart" and gunState then
+        deadzone = deadzone + gunState.heat * tuning.spreadDeadzone
     end
     if math.sqrt(dx * dx + dy * dy) <= deadzone then return end
     -- Frame-rate independent: alpha is the fraction of the gap to cover this
     -- frame, normalised by dt so "Smoothness" feels the same at 30 or 144 FPS.
-    local rate = 60 / math.max(cfg.AimSmoothness, 1)
-    local maxStep = cfg.AimMaxStep
-    if cfg.AimRecoilCompensation and gunState and gunState.recovering then
-        local strength = math.clamp((cfg.AimRecoilStrength or 100) / 100, 0, 1.5) * gunState.recoilFactor
+    local rate = 60 / math.max(tuning.smoothness, 1)
+    local maxStep = tuning.maxStep
+    if cfg.AimTargetPart == "Smart" and gunState and gunState.recovering then
+        local strength = tuning.recoil * gunState.recoilFactor
         rate = rate * (1 + strength * 0.9)
         maxStep = math.min(maxStep * (1 + strength * 0.7), 120)
     end
@@ -2444,28 +2508,15 @@ aimLft:Slider({ Name = "Радиус FOV", Default = guiDefault("AimFov", 80),
 aimLft:Slider({ Name = "Дальность Aim", Default = guiDefault("AimMaxDist", 300),
     Minimum = 50, Maximum = 800, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimMaxDist = v end }, "aimMaxDist")
-aimLft:Header({ Name = "Движение мыши" })
-aimLft:Slider({ Name = "Плавность", Default = guiDefault("AimSmoothness", 5),
-    Minimum = 1, Maximum = 20, DisplayMethod = "Round", Precision = 0,
-    Callback = function(v) cfg.AimSmoothness = math.round(v) end }, "aimSmooth")
-aimLft:Slider({ Name = "Мёртвая зона, px", Default = guiDefault("AimDeadzone", 1.5),
-    Minimum = 0, Maximum = 10, DisplayMethod = "Round", Precision = 1,
-    Callback = function(v) cfg.AimDeadzone = v end }, "aimDeadzone")
-aimLft:Slider({ Name = "Макс. шаг мыши", Default = guiDefault("AimMaxStep", 24),
-    Minimum = 5, Maximum = 80, DisplayMethod = "Round", Precision = 0,
-    Callback = function(v) cfg.AimMaxStep = v end }, "aimMaxStep")
-aimLft:Header({ Name = "Адаптация оружия" })
-aimLft:Toggle({ Name = "Компенсация отдачи", Default = guiDefault("AimRecoilCompensation", true),
-    Callback = function(v) cfg.AimRecoilCompensation = v end }, "aimRecoilCompensation")
-aimLft:Slider({ Name = "Сила возврата, %", Default = guiDefault("AimRecoilStrength", 100),
-    Minimum = 0, Maximum = 150, DisplayMethod = "Round", Precision = 0,
-    Callback = function(v) cfg.AimRecoilStrength = v end }, "aimRecoilStrength")
-aimLft:Toggle({ Name = "Стабилизация разброса", Default = guiDefault("AimSpreadStabilization", true),
-    Callback = function(v) cfg.AimSpreadStabilization = v end }, "aimSpreadStabilization")
-aimLft:Slider({ Name = "Стабилизация, px", Default = guiDefault("AimSpreadDeadzone", 2),
-    Minimum = 0, Maximum = 8, DisplayMethod = "Round", Precision = 1,
-    Callback = function(v) cfg.AimSpreadDeadzone = v end }, "aimSpreadDeadzone")
-aimLft:Label({ Text = "Автопрофиль: пистолеты, автоматы, винтовки и дробовики." })
+aimLft:Header({ Name = "Стиль наведения" })
+guiDefault("AimStyle", "Legit")
+aimLft:Dropdown({ Name = "Режим Aim", Options = { "Legit", "Rage", "Super Rage" },
+    Default = 1, Multi = false, Callback = function(v)
+        cfg.AimStyle = ({["Legit"]="Legit", ["Rage"]="Rage", ["Super Rage"]="SuperRage", ["SuperRage"]="SuperRage"})[v] or "Legit"
+    end }, "aimStyle")
+aimLft:Label({ Text = "Legit — плавно и естественно" })
+aimLft:Label({ Text = "Rage — быстро и жёстко" })
+aimLft:Label({ Text = "Super Rage — максимально резко" })
 
 aimRgt:Header({ Name = "Выбор цели" })
 guiDefault("AimTargetPart", "Smart")
