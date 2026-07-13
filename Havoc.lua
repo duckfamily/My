@@ -443,23 +443,54 @@ local function refreshRayFilter()
     rayParams.FilterDescendantsInstances = _rayFilter
 end
 
-local function hasLineOfSight(cam, targetPart)
+local function hasLineOfSight(cam, targetPart, targetPosition)
     if not targetPart:IsA("BasePart") or not targetPart.CanQuery then return false end
     refreshRayFilter()
     local origin = cam.CFrame.Position
-    local result = workspace:Raycast(origin, targetPart.Position - origin, rayParams)
+    local result = workspace:Raycast(origin, (targetPosition or targetPart.Position) - origin, rayParams)
     -- Require this exact body part. Hitting a weapon, accessory or another limb
     -- must not paint a covered head/torso as visible.
     return result ~= nil and result.Instance == targetPart
 end
 
--- Visible if head OR torso is unobstructed (behind full cover => false)
+local ESP_VIS_POINTS = {
+    Head = {
+        Vector3.zero,
+        Vector3.new(0, 0.32, 0),
+        Vector3.new(-0.32, 0.08, 0),
+        Vector3.new(0.32, 0.08, 0),
+        Vector3.new(0, 0.08, -0.32),
+        Vector3.new(0, 0.08, 0.32),
+    },
+    Torso = {
+        Vector3.zero,
+        Vector3.new(0, 0.3, 0),
+        Vector3.new(-0.3, 0, 0),
+        Vector3.new(0.3, 0, 0),
+    },
+}
+
+local function partVisibleAtOffsets(part, cam, offsets)
+    if not part or not part:IsA("BasePart") then return false end
+    for _, offset in ipairs(offsets) do
+        local point = part.CFrame:PointToWorldSpace(Vector3.new(
+            offset.X * part.Size.X,
+            offset.Y * part.Size.Y,
+            offset.Z * part.Size.Z
+        ))
+        if hasLineOfSight(cam, part, point) then return true end
+    end
+    return false
+end
+
+-- Multipoint visibility catches partial peeks: the centre can still be behind a
+-- wall while the top or one side of the head is already exposed.
 local function computeVisible(model, cam)
     local head = model:FindFirstChild("Head")
-    if head and hasLineOfSight(cam, head) then return true end
+    if partVisibleAtOffsets(head, cam, ESP_VIS_POINTS.Head) then return true end
     local torso = model:FindFirstChild("UpperTorso") or model:FindFirstChild("Torso")
         or model:FindFirstChild("HumanoidRootPart")
-    if torso and hasLineOfSight(cam, torso) then return true end
+    if partVisibleAtOffsets(torso, cam, ESP_VIS_POINTS.Torso) then return true end
     return false
 end
 
@@ -1724,12 +1755,17 @@ local function equippedMuzzlePosition(character)
     return nil
 end
 
-local function rayReachesAimPart(origin, targetPart, targetPosition, filter)
+local function rayReachesAimPart(origin, targetPart, targetPosition, filter, allowBodyHit)
     local direction = targetPosition - origin
     if direction.Magnitude < 0.001 then return false end
     aimRayParams.FilterDescendantsInstances = filter
     local result = workspace:Raycast(origin, direction, aimRayParams)
-    return result ~= nil and result.Instance == targetPart
+    if not result or not result.Instance then return false end
+    if result.Instance == targetPart then return true end
+    -- From the offset muzzle, a ray aimed at the head can naturally touch the
+    -- torso first. That is still a clear shot; accessories and outside cover do
+    -- not qualify because only direct body parts of this character are accepted.
+    return allowBodyHit == true and result.Instance.Parent == targetPart.Parent
 end
 
 local function hasAimLineOfSight(cam, targetPart, targetPosition)
@@ -1749,7 +1785,7 @@ local function hasAimLineOfSight(cam, targetPart, targetPosition)
     -- Handle.MuzzleFX. Require the same point to be clear from the muzzle so a
     -- visible head above a truck is not selected while the barrel hits its side.
     local muzzlePosition = equippedMuzzlePosition(character)
-    if muzzlePosition and not rayReachesAimPart(muzzlePosition, targetPart, targetPosition, filter) then
+    if muzzlePosition and not rayReachesAimPart(muzzlePosition, targetPart, targetPosition, filter, true) then
         return false
     end
     return true
@@ -1877,9 +1913,12 @@ local function pickAimTarget(cam, vpSize, myRoot)
                 if not anchor or (anchor.Position - myRoot.Position).Magnitude > cfg.AimMaxDist then
                     skip = true
                 else
-                    local coarseScreen, coarseOnScreen = cam:WorldToViewportPoint(anchor.Position)
-                    local coarseDistance = (Vector2.new(coarseScreen.X, coarseScreen.Y) - center).Magnitude
-                    if not coarseOnScreen or coarseDistance > cfg.AimFov + 80 then skip = true end
+                    local _, coarseOnScreen = cam:WorldToViewportPoint(anchor.Position)
+                    -- Do not compare the root-part screen distance here. With a
+                    -- high-magnification scope the crosshair can be on the head
+                    -- while HumanoidRootPart is hundreds of pixels lower. The
+                    -- exact selected point is checked against FOV below.
+                    if not coarseOnScreen then skip = true end
                 end
             end
             if not skip then
@@ -2741,8 +2780,8 @@ aimLft:Toggle({ Name = "Показывать круг FOV", Default = guiDefault
 aimLft:Slider({ Name = "Радиус FOV", Default = guiDefault("AimFov", 80),
     Minimum = 10, Maximum = 300, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimFov = v end }, "aimFov")
-aimLft:Slider({ Name = "Дальность Aim", Default = guiDefault("AimMaxDist", 300),
-    Minimum = 50, Maximum = 800, DisplayMethod = "Round", Precision = 0,
+aimLft:Slider({ Name = "Дальность Aim", Default = guiDefault("AimMaxDist", 1500),
+    Minimum = 50, Maximum = 5000, DisplayMethod = "Round", Precision = 0,
     Callback = function(v) cfg.AimMaxDist = v end }, "aimMaxDist")
 aimLft:Header({ Name = "Стиль наведения" })
 guiDefault("AimStyle", "Legit")
