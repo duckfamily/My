@@ -797,6 +797,19 @@ local function round(value, decimals)
 	return math.ceil(scaled - 0.5) / m
 end
 
+local function snapGuiPosition(inst)
+	if not inst or not inst.Parent then return end
+	local absolute = inst.AbsolutePosition
+	local dx = round(absolute.X, 0) - absolute.X
+	local dy = round(absolute.Y, 0) - absolute.Y
+	if math.abs(dx) < 0.001 and math.abs(dy) < 0.001 then return end
+	local position = inst.Position
+	inst.Position = UDim2.new(
+		position.X.Scale, position.X.Offset + dx,
+		position.Y.Scale, position.Y.Offset + dy
+	)
+end
+
 local function clamp01(v) return math.clamp(v, 0, 1) end
 
 local function safeCall(fn, ...)
@@ -1407,7 +1420,7 @@ function Library:Dialog(opts)
 			AutoButtonColor = false,
 			BorderSizePixel = 0,
 			Font = FONT_M,
-			TextSize = 12.5,
+			TextSize = 13,
 			Text = buttonText,
 			LayoutOrder = i,
 			ZIndex = 954,
@@ -1609,8 +1622,8 @@ local function makeCard(tab, opts, slotWidthOverride, heightOverride)
 			Parent = row,
 			Position = UDim2.fromOffset(22, 31),
 			Size = UDim2.new(1, -textReserve, 0, 15),
-			Font = FONT,
-			TextSize = 11.5,
+			Font = FONT_M,
+			TextSize = 12,
 			Text = desc,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Theme = { TextColor3 = "Muted" },
@@ -1691,8 +1704,8 @@ function Library:Window(opts)
 	self.ToggleKey  = typeof(opts.ToggleKey) == "EnumItem" and opts.ToggleKey or Enum.KeyCode.RightShift
 	self.MinSize    = typeof(opts.MinSize) == "Vector2" and opts.MinSize or Vector2.new(760, 520)
 	self.MinSize = Vector2.new(
-		math.max(320, finiteNumber(self.MinSize.X, 600)),
-		math.max(180, finiteNumber(self.MinSize.Y, 400))
+		round(math.max(320, finiteNumber(self.MinSize.X, 600)), 0),
+		round(math.max(180, finiteNumber(self.MinSize.Y, 400)), 0)
 	)
 
 	local size = typeof(opts.Size) == "UDim2" and opts.Size or UDim2.fromOffset(1180, 730)
@@ -1709,6 +1722,7 @@ function Library:Window(opts)
 		Theme = { BackgroundColor3 = "Backdrop" },
 	}, { corner(14) })
 	self.Frame = Main
+	snapGuiPosition(Main)
 	local initialScale = math.clamp(finiteNumber(opts.Scale, 1), 0.5, 1.5)
 	local windowScale = new("UIScale", { Parent = Main, Scale = initialScale })
 	self.Scale = initialScale
@@ -1745,7 +1759,7 @@ function Library:Window(opts)
 
 	--═══ ЛЕВАЯ ПАНЕЛЬ ═══
 	local minimumWindowWidth = self.MinSize.X
-	local sidebarWidth = math.clamp(finiteNumber(opts.SidebarWidth, 288), 210, 340)
+	local sidebarWidth = round(math.clamp(finiteNumber(opts.SidebarWidth, 288), 210, 340), 0)
 	self.SidebarWidth = sidebarWidth
 	self.MinSize = Vector2.new(math.max(minimumWindowWidth, sidebarWidth + 280), self.MinSize.Y)
 
@@ -1841,8 +1855,8 @@ function Library:Window(opts)
 		Parent = Brand,
 		Position = UDim2.fromOffset(64, 39),
 		Size = UDim2.new(1, -116, 0, 13),
-		Font = FONT,
-		TextSize = 11,
+		Font = FONT_M,
+		TextSize = 12,
 		Text = self.Subtitle,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Theme = { TextColor3 = "Muted" },
@@ -1888,7 +1902,7 @@ function Library:Window(opts)
 		Parent = searchKeycap,
 		Size = UDim2.fromScale(1, 1),
 		Font = FONT_M,
-		TextSize = 9.5,
+		TextSize = 10,
 		Text = asText(opts.SearchKeyText, "CTRL K"),
 		TextXAlignment = Enum.TextXAlignment.Center,
 		Theme = { TextColor3 = "Muted" },
@@ -1899,8 +1913,8 @@ function Library:Window(opts)
 		Position = UDim2.fromOffset(38, 0),
 		Size = UDim2.new(1, -96, 1, 0),
 		BackgroundTransparency = 1,
-		Font = FONT,
-		TextSize = 12.5,
+		Font = FONT_M,
+		TextSize = 13,
 		Text = "",
 		PlaceholderText = asText(opts.SearchPlaceholder, "Поиск по настройкам"),
 		ClearTextOnFocus = false,
@@ -2085,7 +2099,7 @@ function Library:Window(opts)
 		Parent = TopBar,
 		Position = UDim2.fromOffset(76, 51),
 		Size = UDim2.new(1, -206, 0, 16),
-		Font = FONT,
+		Font = FONT_M,
 		TextSize = 12,
 		Text = "",
 		TextTruncate = Enum.TextTruncate.AtEnd,
@@ -2181,8 +2195,8 @@ function Library:Window(opts)
 		activeDrag = function(i)
 			local d = i.Position - origin
 			Main.Size = UDim2.fromOffset(
-				math.max(self.MinSize.X, startSize.X + d.X),
-				math.max(self.MinSize.Y, startSize.Y + d.Y)
+				round(math.max(self.MinSize.X, startSize.X + d.X), 0),
+				round(math.max(self.MinSize.Y, startSize.Y + d.Y), 0)
 			)
 			savedSize = Main.Size
 		end
@@ -2241,7 +2255,7 @@ function Library:Window(opts)
 
 	function self:SetSidebarWidth(width)
 		if not Library.Alive or not Main.Parent then return false end
-		sidebarWidth = math.clamp(finiteNumber(width, sidebarWidth), 210, 340)
+		sidebarWidth = round(math.clamp(finiteNumber(width, sidebarWidth), 210, 340), 0)
 		self.SidebarWidth = sidebarWidth
 		self.MinSize = Vector2.new(math.max(minimumWindowWidth, sidebarWidth + 280), self.MinSize.Y)
 		Sidebar.Size = UDim2.new(0, sidebarOpen and sidebarWidth or 0, 1, 0)
@@ -2275,7 +2289,10 @@ function Library:Window(opts)
 			if not self.Hidden then
 				local absolute = Main.AbsoluteSize
 				if absolute.X > 0 and absolute.Y > 0 then
-					savedSize = UDim2.fromOffset(absolute.X, absolute.Y)
+					savedSize = UDim2.fromOffset(
+						round(absolute.X, 0),
+						round(absolute.Y, 0)
+					)
 				end
 				tween(Main, EASE, { Size = UDim2.fromOffset(380, 90) })
 			end
@@ -2289,6 +2306,7 @@ function Library:Window(opts)
 				task.delay(0.22, function()
 					if token == minimizeToken and not self.Minimized and not self.Hidden and Main.Parent then
 						applyChrome(false)
+						snapGuiPosition(Main)
 					end
 				end)
 			end
@@ -2311,11 +2329,19 @@ function Library:Window(opts)
 			applyChrome(self.Minimized)
 			local targetSize = self.Minimized and UDim2.fromOffset(380, 90) or savedSize
 			tween(Main, EASE, { Size = targetSize })
+			task.delay(0.22, function()
+				if token == visibilityToken and not self.Hidden and Main.Parent then
+					snapGuiPosition(Main)
+				end
+			end)
 		else
 			if not self.Minimized then
 				local absolute = Main.AbsoluteSize
 				if absolute.X > 0 and absolute.Y > 0 then
-					savedSize = UDim2.fromOffset(absolute.X, absolute.Y)
+					savedSize = UDim2.fromOffset(
+						round(absolute.X, 0),
+						round(absolute.Y, 0)
+					)
 				end
 			end
 			local width = Main.Size.X
@@ -2359,15 +2385,27 @@ function Library:Window(opts)
 			Grip.Visible = true
 			savedSize = restoreSize
 			tween(Main, EASE, { Size = restoreSize, Position = restorePosition })
+			task.delay(0.24, function()
+				if not maximized and Main.Parent then snapGuiPosition(Main) end
+			end)
 		else
 			maximized = true
 			Grip.Visible = false
-			restoreSize = UDim2.fromOffset(Main.AbsoluteSize.X, Main.AbsoluteSize.Y)
+			restoreSize = UDim2.fromOffset(
+				round(Main.AbsoluteSize.X, 0),
+				round(Main.AbsoluteSize.Y, 0)
+			)
 			restorePosition = Main.Position
 			local vp = viewport()
-			local target = UDim2.fromOffset(math.max(self.MinSize.X, vp.X - 72), math.max(self.MinSize.Y, vp.Y - 72))
+			local target = UDim2.fromOffset(
+				round(math.max(self.MinSize.X, vp.X - 72), 0),
+				round(math.max(self.MinSize.Y, vp.Y - 72), 0)
+			)
 			savedSize = target
 			tween(Main, EASE, { Size = target, Position = UDim2.fromScale(0.5, 0.5) })
+			task.delay(0.24, function()
+				if maximized and Main.Parent then snapGuiPosition(Main) end
+			end)
 		end
 	end)
 	BtnMin.MouseButton1Click:Connect(function() self:SetMinimized(not self.Minimized) end)
@@ -2456,6 +2494,9 @@ function Library:Window(opts)
 	--── появление окна ──
 	Main.Size = UDim2.new(size.X.Scale, size.X.Offset, 0, 0)
 	tween(Main, EASE_SLOW, { Size = size })
+	task.delay(0.44, function()
+		if Main.Parent then snapGuiPosition(Main) end
+	end)
 
 	--═══ ПОИСК / КОМАНДНАЯ ПАЛИТРА ═══
 	local Results = new("Frame", {
@@ -2522,7 +2563,7 @@ function Library:Window(opts)
 					Parent = item,
 					Position = UDim2.fromOffset(10, 5),
 					Size = UDim2.new(1, -20, 0, 15),
-					TextSize = 12.5,
+					TextSize = 13,
 					Text = entry.name,
 					TextTruncate = Enum.TextTruncate.AtEnd,
 					ZIndex = 603,
@@ -2531,8 +2572,8 @@ function Library:Window(opts)
 					Parent = item,
 					Position = UDim2.fromOffset(10, 20),
 					Size = UDim2.new(1, -20, 0, 13),
-					Font = FONT,
-					TextSize = 11,
+					Font = FONT_M,
+					TextSize = 12,
 					Text = entry.tab.Name .. "  /  " .. entry.kind,
 					ZIndex = 603,
 					Theme = { TextColor3 = "Muted" },
@@ -2717,7 +2758,7 @@ function Window:Tab(opts)
 				Position = UDim2.fromOffset(2, 10),
 				Size = UDim2.new(1, -4, 0, 12),
 				Font = FONT_SB,
-				TextSize = 9.5,
+				TextSize = 10,
 				Text = group:upper(),
 				Theme = { TextColor3 = "Muted" },
 			})
@@ -3067,7 +3108,7 @@ function Tab:Button(opts)
 		AutoButtonColor = false,
 		BorderSizePixel = 0,
 		Font = FONT_SB,
-		TextSize = 12.5,
+		TextSize = 13,
 		Text = asText(opts.ButtonText, "Выполнить"),
 		Theme = { BackgroundColor3 = "CardHover", TextColor3 = "Text" },
 	}, { corner(8), stroke("StrokeSoft", 1, 0) })
