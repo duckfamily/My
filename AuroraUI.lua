@@ -1974,12 +1974,44 @@ local function runKeySystem(window, options, main)
 	local resolved = false
 	local busy = false
 	local gateEvent = Instance.new("BindableEvent")
+	local shellClip = window.Clip
+	local shellStroke = main:FindFirstChildOfClass("UIStroke")
+	local shellState = {
+		Size = main.Size,
+		BackgroundTransparency = main.BackgroundTransparency,
+		ClipVisible = shellClip and shellClip.Visible,
+		StrokeTransparency = shellStroke and shellStroke.Transparency,
+	}
+	local shellRestored = false
+
+	local function restoreShell()
+		if shellRestored or not main.Parent then return end
+		shellRestored = true
+		main.Size = shellState.Size
+		main.BackgroundTransparency = shellState.BackgroundTransparency
+		if shellClip and shellClip.Parent then
+			shellClip.Visible = shellState.ClipVisible
+		end
+		if shellStroke and shellStroke.Parent then
+			shellStroke.Transparency = shellState.StrokeTransparency
+		end
+		snapGuiPosition(main)
+	end
+
+	-- До авторизации показываем только компактную карточку Key System.
+	-- Основной desktop-интерфейс создаётся заранее, но остаётся полностью скрытым.
+	main.Size = UDim2.fromOffset(500, 450)
+	main.BackgroundTransparency = 1
+	if shellClip then shellClip.Visible = false end
+	if shellStroke then shellStroke.Transparency = 1 end
+	snapGuiPosition(main)
 
 	local gate = new("Frame", {
 		Parent = main,
 		Name = "KeySystem",
 		Size = UDim2.fromScale(1, 1),
 		Active = true,
+		BackgroundTransparency = 1,
 		ZIndex = 300,
 		Theme = { BackgroundColor3 = "Backdrop" },
 	}, { corner(14) })
@@ -2274,6 +2306,7 @@ local function runKeySystem(window, options, main)
 		tween(gate, EASE_FAST, { BackgroundTransparency = 1 })
 		task.delay(0.16, function()
 			if gate.Parent then gate:Destroy() end
+			restoreShell()
 		end)
 		gateEvent:Fire(true)
 	end
