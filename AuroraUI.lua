@@ -991,7 +991,7 @@ local function draggable(handle, target, onMove, canStart)
 		local origin = input.Position
 		local startAbs = target.AbsolutePosition
 		local startSize = target.AbsoluteSize
-		local anchor = target.AnchorPoint
+		local startPosition = target.Position
 		activeDrag = function(i)
 			local d = i.Position - origin
 			local vp = viewport and viewport() or Vector2.new(1920, 1080)
@@ -1000,9 +1000,10 @@ local function draggable(handle, target, onMove, canStart)
 			local maxY = math.max(0, vp.Y - 48)
 			local x = math.clamp(startAbs.X + d.X, minX, maxX)
 			local y = math.clamp(startAbs.Y + d.Y, 0, maxY)
-			target.Position = UDim2.fromOffset(
-				x + startSize.X * anchor.X,
-				y + startSize.Y * anchor.Y
+			local adjusted = Vector2.new(x - startAbs.X, y - startAbs.Y)
+			target.Position = UDim2.new(
+				startPosition.X.Scale, startPosition.X.Offset + adjusted.X,
+				startPosition.Y.Scale, startPosition.Y.Offset + adjusted.Y
 			)
 			if onMove then onMove() end
 		end
@@ -1054,6 +1055,11 @@ local Overlay = new("Frame", {
 	BackgroundTransparency = 1,
 	ZIndex = 500,
 })
+
+local function overlayPosition(x, y)
+	local origin = Overlay.AbsolutePosition
+	return UDim2.fromOffset(x - origin.X, y - origin.Y)
+end
 
 viewport = function()
 	local cam = workspace.CurrentCamera
@@ -1707,10 +1713,9 @@ function Library:Window(opts)
 	local windowScale = new("UIScale", { Parent = Main, Scale = initialScale })
 	self.Scale = initialScale
 
-	-- Большой AccentGlow здесь превращался в заметный прямоугольник над окном:
-	-- девятисегментная центральная область текстуры растягивалась на сотни пикселей.
-	-- Акцент остаётся на интерактивных элементах, а корпус получает только мягкую тень.
-	softShadow(Main, 0, 18, 0.6)
+	-- У главного окна нет внешней тени: на светлом фоне она превращается
+	-- в заметный тёмный ореол. Тени остаются только у временных верхних
+	-- слоёв — модалок, уведомлений и popup.
 
 	local outerStroke = stroke("Stroke", 1, 0.08)
 	outerStroke.Parent = Main
@@ -2428,13 +2433,18 @@ function Library:Window(opts)
 			floatDragged = false
 			local origin = input.Position
 			local startAbs = float.AbsolutePosition
+			local startPosition = float.Position
 			activeDrag = function(i)
 				local delta = i.Position - origin
 				if delta.Magnitude > 5 then floatDragged = true end
 				local vp = viewport()
 				local x = math.clamp(startAbs.X + delta.X, 0, math.max(0, vp.X - 46))
 				local y = math.clamp(startAbs.Y + delta.Y, 0, math.max(0, vp.Y - 46))
-				float.Position = UDim2.fromOffset(x, y + 23)
+				local adjusted = Vector2.new(x - startAbs.X, y - startAbs.Y)
+				float.Position = UDim2.new(
+					startPosition.X.Scale, startPosition.X.Offset + adjusted.X,
+					startPosition.Y.Scale, startPosition.Y.Offset + adjusted.Y
+				)
 			end
 		end)
 		float.MouseButton1Click:Connect(function()
@@ -2554,7 +2564,7 @@ function Library:Window(opts)
 
 		if found == 0 then hideResults() return end
 		Results.Visible = true
-		Results.Position = UDim2.fromOffset(
+		Results.Position = overlayPosition(
 			SearchBox.AbsolutePosition.X,
 			SearchBox.AbsolutePosition.Y + 38
 		)
@@ -3587,9 +3597,9 @@ function Tab:Dropdown(opts)
 			y = button.AbsolutePosition.Y - h - 4
 		end
 		y = math.clamp(y, 10, math.max(10, vp.Y - h - 10))
-		menu.Position = UDim2.fromOffset(x, y)
+		menu.Position = overlayPosition(x, y)
 		if menuShadow then
-			menuShadow.Position = UDim2.fromOffset(x - 18, y - 18)
+			menuShadow.Position = overlayPosition(x - 18, y - 18)
 			menuShadow.Size = UDim2.fromOffset(width + 36, h + 36)
 		end
 	end
@@ -4402,9 +4412,9 @@ function Tab:Colorpicker(opts)
 		if y + 182 > vp.Y - 10 then y = swatchBtn.AbsolutePosition.Y - 188 end
 		x = math.clamp(x, 10, math.max(10, vp.X - 238))
 		y = math.clamp(y, 10, math.max(10, vp.Y - 192))
-		pop.Position = UDim2.fromOffset(x, y)
+		pop.Position = overlayPosition(x, y)
 		if popShadow then
-			popShadow.Position = UDim2.fromOffset(x - 18, y - 18)
+			popShadow.Position = overlayPosition(x - 18, y - 18)
 			popShadow.Size = UDim2.fromOffset(264, 218)
 		end
 	end
