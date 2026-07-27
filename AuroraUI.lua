@@ -3199,11 +3199,23 @@ function Library:Window(opts)
 	end
 
 	--── появление окна ──
-	Main.Size = UDim2.new(size.X.Scale, size.X.Offset, 0, 0)
-	tween(Main, EASE_SLOW, { Size = size })
-	task.delay(0.44, function()
-		if Main.Parent then snapGuiPosition(Main) end
-	end)
+	-- Key System сам временно уменьшает Main до своей карточки. Если сначала
+	-- запустить обычный tween от нулевой высоты, он запомнит промежуточный
+	-- размер и после авторизации восстановит окно как одну горизонтальную линию.
+	local keySystemOptions = opts.KeySystem
+	local keySystemEnabled = keySystemOptions ~= nil
+		and keySystemOptions ~= false
+		and not (type(keySystemOptions) == "table" and keySystemOptions.Enabled == false)
+	if keySystemEnabled then
+		Main.Size = size
+		snapGuiPosition(Main)
+	else
+		Main.Size = UDim2.new(size.X.Scale, size.X.Offset, 0, 0)
+		tween(Main, EASE_SLOW, { Size = size })
+		task.delay(0.44, function()
+			if Main.Parent then snapGuiPosition(Main) end
+		end)
+	end
 
 	--═══ ПОИСК / КОМАНДНАЯ ПАЛИТРА ═══
 	local Results = new("Frame", {
