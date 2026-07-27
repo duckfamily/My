@@ -102,6 +102,63 @@ local FS = {
 }
 local HAS_FS = FS.write and FS.read and FS.isfile and true or false
 
+local function resolveHttpRequest()
+	if typeof(request) == "function" then return request end
+	if typeof(http_request) == "function" then return http_request end
+	if typeof(syn) == "table" and typeof(syn.request) == "function" then return syn.request end
+	if typeof(http) == "table" and typeof(http.request) == "function" then return http.request end
+	if typeof(fluxus) == "table" and typeof(fluxus.request) == "function" then return fluxus.request end
+	return nil
+end
+
+local function requestJSON(method, url, body)
+	if not HttpService then return nil, "HttpService is unavailable." end
+	if type(url) ~= "string" or #url > 2048
+		or not (url:match("^https://") or url:match("^http://localhost[:/]")) then
+		return nil, "The key server URL is invalid."
+	end
+	local requester = resolveHttpRequest()
+	if not requester then
+		return nil, "This executor does not support HTTP requests."
+	end
+
+	local encoded
+	if body ~= nil then
+		local ok, result = pcall(HttpService.JSONEncode, HttpService, body)
+		if not ok then return nil, "Could not encode the server request." end
+		encoded = result
+	end
+
+	local ok, response = pcall(requester, {
+		Url = url,
+		URL = url,
+		Method = method,
+		Headers = {
+			["Accept"] = "application/json",
+			["Content-Type"] = "application/json",
+		},
+		Body = encoded,
+	})
+	if not ok or type(response) ~= "table" then
+		return nil, "Could not contact the key server."
+	end
+
+	local status = tonumber(response.StatusCode or response.Status) or 0
+	local raw = response.Body or response.body
+	if type(raw) ~= "string" or #raw > 65536 then
+		return nil, "The key server returned an invalid response."
+	end
+	local decoded, data = pcall(HttpService.JSONDecode, HttpService, raw)
+	if not decoded or type(data) ~= "table" then
+		return nil, "The key server returned invalid JSON."
+	end
+	if status < 200 or status >= 300 then
+		local message = data.message or data.Message
+		return nil, message ~= nil and tostring(message) or "Key server request failed."
+	end
+	return data
+end
+
 -- Гасим предыдущую копию библиотеки, если она уже висит в памяти
 if ENV.AuroraUI and type(ENV.AuroraUI.Destroy) == "function" then
 	pcall(ENV.AuroraUI.Destroy, ENV.AuroraUI)
@@ -1777,6 +1834,9 @@ end
 local function normalizeKeyProviders(config)
 	local source = type(config.Providers) == "table" and config.Providers or {}
 	local providers = {}
+	local server = type(config.Server) == "string"
+		and config.Server:match("^%s*(.-)%s*$"):gsub("/+$", "")
+		or nil
 
 	local function add(id)
 		local meta = KEY_PROVIDER_META[id]
@@ -1789,6 +1849,34 @@ local function normalizeKeyProviders(config)
 		if url == nil then
 			url = id == "WorkInk" and config.WorkInkURL or config.LootLabsURL
 		end
+		local validator = raw.Validate or raw.Verify or config.Validate or config.Verify
+
+		if server and server ~= "" then
+			if url == nil then
+				url = function(_, providerId)
+					local data, err = requestJSON("POST", server .. "/api/start", {
+						provider = providerId,
+					})
+					if not data then error(err) end
+					if data.success ~= true or type(data.url) ~= "string" then
+						error(asText(data.message, "The key server did not return a link."))
+					end
+					return data.url
+				end
+			end
+			if validator == nil then
+				validator = function(key, providerId)
+					local data, err = requestJSON("POST", server .. "/api/verify", {
+						key = key,
+						provider = providerId,
+					})
+					if not data then return false, err end
+					return data.success == true,
+						asText(data.message, data.success == true and "Access granted." or "Invalid key."),
+						data.token or key
+				end
+			end
+		end
 
 		table.insert(providers, {
 			Id = id,
@@ -1796,7 +1884,7 @@ local function normalizeKeyProviders(config)
 			Description = asText(raw.Description, meta.Description),
 			Icon = raw.Icon or meta.Icon,
 			GetKeyURL = url,
-			Validate = raw.Validate or raw.Verify or config.Validate or config.Verify,
+			Validate = validator,
 			OnGetKey = raw.OnGetKey or config.OnGetKey,
 			Key = raw.Key,
 			Keys = raw.Keys,
@@ -2125,20 +2213,20 @@ local function runKeySystem(window, options, main)
 			local ok, result = pcall(source, sessionId, provider.Id)
 			if not ok then
 				warn("[AuroraUI] GetKeyURL failed: " .. tostring(result))
-				return nil
+				return nil, tostring(result)
 			end
 			source = result
 		end
 		local url = type(source) == "string" and source:match("^%s*(.-)%s*$") or nil
-		if not url or url == "" then return nil end
+		if not url or url == "" then return nil, "No key link is configured for " .. provider.Name .. "." end
 		return url
 	end
 
 	getButton.MouseButton1Click:Connect(function()
 		if busy or resolved then return end
-		local url = resolveURL(selected)
+		local url, urlError = resolveURL(selected)
 		if not url then
-			setStatus("No key link is configured for " .. selected.Name .. ".", "Bad")
+			setStatus(asText(urlError, "Could not create a key link."), "Bad")
 			return
 		end
 
