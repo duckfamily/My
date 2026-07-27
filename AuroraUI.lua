@@ -67,35 +67,40 @@ end
 --  1. ТЕМЫ
 --═══════════════════════════════════════════════════════════════════════
 
+-- Палитра почти нейтральная: цветной остаётся только акцентная линия.
+-- Синевато-серые фоны читаются дёшево, а ровные ступени яркости
+-- (Backdrop → Sidebar → Content → Card) дают ощущение глубины.
 local THEMES = {
 	Aurora = {
-		Backdrop   = Color3.fromRGB(11, 12, 17),   -- корпус окна
-		Sidebar    = Color3.fromRGB(15, 16, 23),   -- левая панель
-		Content    = Color3.fromRGB(19, 21, 29),   -- рабочая область
-		Card       = Color3.fromRGB(26, 29, 39),   -- строка элемента
-		CardHover  = Color3.fromRGB(32, 36, 48),
-		Inset      = Color3.fromRGB(14, 15, 21),   -- утопленные поля
-		Stroke     = Color3.fromRGB(38, 42, 56),
-		Text       = Color3.fromRGB(236, 239, 247),
-		SubText    = Color3.fromRGB(139, 147, 168),
-		Muted      = Color3.fromRGB(94, 101, 120),
-		Accent     = Color3.fromRGB(122, 140, 255),
-		Accent2    = Color3.fromRGB(190, 122, 255),
-		Good       = Color3.fromRGB(64, 214, 148),
-		Warn       = Color3.fromRGB(255, 186, 84),
-		Bad        = Color3.fromRGB(255, 92, 112),
+		Backdrop   = Color3.fromRGB(9, 9, 11),      -- корпус окна
+		Sidebar    = Color3.fromRGB(13, 13, 16),    -- левая панель
+		Content    = Color3.fromRGB(17, 17, 21),    -- рабочая область
+		Card       = Color3.fromRGB(24, 24, 29),    -- строка элемента
+		CardHover  = Color3.fromRGB(33, 33, 40),
+		Inset      = Color3.fromRGB(12, 12, 15),    -- утопленные поля
+		Stroke     = Color3.fromRGB(42, 42, 51),
+		StrokeSoft = Color3.fromRGB(28, 28, 34),
+		Text       = Color3.fromRGB(245, 245, 248),
+		SubText    = Color3.fromRGB(152, 152, 164),
+		Muted      = Color3.fromRGB(99, 99, 112),
+		Accent     = Color3.fromRGB(110, 127, 255),
+		Accent2    = Color3.fromRGB(170, 120, 255),
+		Good       = Color3.fromRGB(52, 199, 123),
+		Warn       = Color3.fromRGB(245, 180, 70),
+		Bad        = Color3.fromRGB(250, 90, 110),
 	},
 	Midnight = {
-		Backdrop   = Color3.fromRGB(10, 12, 16),
-		Sidebar    = Color3.fromRGB(14, 17, 22),
-		Content    = Color3.fromRGB(18, 22, 28),
-		Card       = Color3.fromRGB(25, 30, 38),
-		CardHover  = Color3.fromRGB(31, 37, 47),
-		Inset      = Color3.fromRGB(13, 16, 21),
-		Stroke     = Color3.fromRGB(36, 43, 54),
-		Text       = Color3.fromRGB(232, 238, 245),
-		SubText    = Color3.fromRGB(134, 146, 163),
-		Muted      = Color3.fromRGB(90, 100, 116),
+		Backdrop   = Color3.fromRGB(8, 10, 12),
+		Sidebar    = Color3.fromRGB(12, 14, 17),
+		Content    = Color3.fromRGB(16, 19, 23),
+		Card       = Color3.fromRGB(23, 27, 32),
+		CardHover  = Color3.fromRGB(31, 36, 43),
+		Inset      = Color3.fromRGB(11, 13, 16),
+		Stroke     = Color3.fromRGB(40, 46, 54),
+		StrokeSoft = Color3.fromRGB(26, 30, 36),
+		Text       = Color3.fromRGB(240, 246, 250),
+		SubText    = Color3.fromRGB(144, 156, 170),
+		Muted      = Color3.fromRGB(94, 105, 118),
 		Accent     = Color3.fromRGB(56, 189, 248),
 		Accent2    = Color3.fromRGB(45, 212, 191),
 		Good       = Color3.fromRGB(52, 211, 153),
@@ -103,16 +108,17 @@ local THEMES = {
 		Bad        = Color3.fromRGB(248, 113, 113),
 	},
 	Ember = {
-		Backdrop   = Color3.fromRGB(16, 12, 12),
-		Sidebar    = Color3.fromRGB(21, 16, 16),
-		Content    = Color3.fromRGB(26, 20, 20),
-		Card       = Color3.fromRGB(35, 27, 27),
-		CardHover  = Color3.fromRGB(43, 33, 33),
-		Inset      = Color3.fromRGB(19, 14, 14),
-		Stroke     = Color3.fromRGB(52, 40, 40),
-		Text       = Color3.fromRGB(245, 238, 236),
-		SubText    = Color3.fromRGB(168, 145, 140),
-		Muted      = Color3.fromRGB(118, 100, 96),
+		Backdrop   = Color3.fromRGB(13, 10, 9),
+		Sidebar    = Color3.fromRGB(18, 14, 13),
+		Content    = Color3.fromRGB(23, 18, 17),
+		Card       = Color3.fromRGB(32, 25, 24),
+		CardHover  = Color3.fromRGB(42, 33, 31),
+		Inset      = Color3.fromRGB(16, 12, 11),
+		Stroke     = Color3.fromRGB(54, 43, 40),
+		StrokeSoft = Color3.fromRGB(36, 28, 26),
+		Text       = Color3.fromRGB(248, 242, 239),
+		SubText    = Color3.fromRGB(172, 150, 143),
+		Muted      = Color3.fromRGB(120, 102, 96),
 		Accent     = Color3.fromRGB(255, 138, 76),
 		Accent2    = Color3.fromRGB(255, 94, 120),
 		Good       = Color3.fromRGB(120, 205, 140),
@@ -149,9 +155,25 @@ end
 --  2. УТИЛИТЫ
 --═══════════════════════════════════════════════════════════════════════
 
-local FONT   = Enum.Font.Gotham
-local FONT_M = Enum.Font.GothamMedium
-local FONT_B = Enum.Font.GothamBold
+-- Inter — тот же шрифт, что в Linear и подобных десктоп-приложениях,
+-- и в отличие от Gotham у него есть настоящие промежуточные веса.
+-- Если клиент старый и FontFace недоступен, откатываемся на Gotham.
+local FONT, FONT_M, FONT_SB, FONT_B
+do
+	local family = "rbxasset://fonts/families/Inter.json"
+	local ok = pcall(function() return Font.new(family, Enum.FontWeight.Medium) end)
+	if ok then
+		FONT    = Font.new(family, Enum.FontWeight.Regular)
+		FONT_M  = Font.new(family, Enum.FontWeight.Medium)
+		FONT_SB = Font.new(family, Enum.FontWeight.SemiBold)
+		FONT_B  = Font.new(family, Enum.FontWeight.Bold)
+	else
+		FONT    = Enum.Font.Gotham
+		FONT_M  = Enum.Font.GothamMedium
+		FONT_SB = Enum.Font.GothamMedium
+		FONT_B  = Enum.Font.GothamBold
+	end
+end
 
 local EASE      = TweenInfo.new(0.22, Enum.EasingStyle.Quart, Enum.EasingDirection.Out)
 local EASE_FAST  = TweenInfo.new(0.12, Enum.EasingStyle.Quad,  Enum.EasingDirection.Out)
@@ -173,6 +195,10 @@ local function new(class, props, children)
 			parent = v
 		elseif k == "Theme" then
 			for prop, key in next, v do register(inst, prop, key) end
+		elseif k == "Font" and typeof(v) == "Font" then
+			-- FontFace и Font — разные свойства; пишем в нужное,
+			-- чтобы вызывающий код не думал, какой режим сейчас активен
+			inst.FontFace = v
 		else
 			inst[k] = v
 		end
@@ -223,6 +249,274 @@ local function label(props)
 	}
 	for k, v in next, props do base[k] = v end
 	return new("TextLabel", base)
+end
+
+--════════════════════════════ ИКОНКИ ════════════════════════════
+-- Набор Lucide (тот же, что тянет Rayfield): спрайтшиты, из которых иконка
+-- вырезается через ImageRectOffset/ImageRectSize. Вшит подмножеством, чтобы
+-- не тащить 147 КБ и не зависеть от чужого репозитория.
+-- Формат: имя = {assetId, ширина, высота, смещениеX, смещениеY}
+local LUCIDE = {
+	["activity"]={16898612629,48,48,514,771},
+	["anchor"]={16898612629,48,48,306,869},
+	["arrow-down"]={16898612629,48,48,967,49},
+	["arrow-left"]={16898612629,48,48,98,918},
+	["arrow-right"]={16898612629,48,48,453,820},
+	["arrow-up"]={16898612629,48,48,967,355},
+	["at-sign"]={16898612629,48,48,453,869},
+	["axe"]={16898612629,48,48,869,710},
+	["banknote"]={16898612629,48,48,453,967},
+	["battery"]={16898612629,48,48,967,857},
+	["bell"]={16898612819,48,48,820,257},
+	["bomb"]={16898612819,48,48,257,869},
+	["bookmark"]={16898612819,48,48,514,918},
+	["bot"]={16898612819,48,48,869,98},
+	["box"]={16898612819,48,48,771,196},
+	["boxes"]={16898612819,48,48,196,771},
+	["brush"]={16898612819,48,48,404,820},
+	["bug"]={16898612819,48,48,257,967},
+	["calendar"]={16898612819,48,48,355,918},
+	["camera"]={16898612819,48,48,967,563},
+	["car"]={16898612819,48,48,918,147},
+	["check"]={16898612819,48,48,710,869},
+	["chevron-down"]={16898612819,48,48,196,918},
+	["chevron-left"]={16898612819,48,48,404,967},
+	["chevron-right"]={16898612819,48,48,869,759},
+	["chevron-up"]={16898612819,48,48,710,918},
+	["circle"]={16898613044,48,48,771,355},
+	["clipboard"]={16898613044,48,48,49,869},
+	["clock"]={16898613044,48,48,771,661},
+	["cloud"]={16898613044,48,48,918,306},
+	["code"]={16898613044,48,48,355,869},
+	["coins"]={16898613044,48,48,869,612},
+	["compass"]={16898613044,48,48,514,967},
+	["copy"]={16898613044,48,48,918,612},
+	["cpu"]={16898613044,48,48,196,869},
+	["crosshair"]={16898613044,48,48,453,869},
+	["crown"]={16898613044,48,48,404,918},
+	["database"]={16898613044,48,48,710,869},
+	["download"]={16898613044,48,48,820,906},
+	["droplet"]={16898613044,48,48,820,955},
+	["eye"]={16898613353,48,48,771,563},
+	["eye-off"]={16898613353,48,48,820,514},
+	["filter"]={16898613353,48,48,612,869},
+	["flag"]={16898613353,48,48,98,918},
+	["flame"]={16898613353,48,48,967,306},
+	["folder"]={16898613353,48,48,404,967},
+	["footprints"]={16898613353,48,48,918,710},
+	["gamepad-2"]={16898613353,48,48,710,967},
+	["gem"]={16898613353,48,48,918,857},
+	["ghost"]={16898613353,48,48,869,906},
+	["gift"]={16898613353,48,48,820,955},
+	["globe"]={16898613509,48,48,771,563},
+	["hammer"]={16898613509,48,48,306,820},
+	["hash"]={16898613509,48,48,147,771},
+	["headphones"]={16898613509,48,48,306,869},
+	["heart"]={16898613509,48,48,661,771},
+	["hexagon"]={16898613509,48,48,967,0},
+	["home"]={16898613509,48,48,820,147},
+	["hourglass"]={16898613509,48,48,49,918},
+	["image"]={16898613509,48,48,306,918},
+	["info"]={16898613509,48,48,612,869},
+	["key"]={16898613509,48,48,869,404},
+	["keyboard"]={16898613509,48,48,453,820},
+	["layers"]={16898613509,48,48,98,967},
+	["layout-dashboard"]={16898613509,48,48,967,355},
+	["layout-grid"]={16898613509,48,48,918,404},
+	["layout-list"]={16898613509,48,48,869,453},
+	["leaf"]={16898613509,48,48,918,661},
+	["link"]={16898613509,48,48,918,453},
+	["list"]={16898613509,48,48,869,808},
+	["lock"]={16898613509,48,48,918,857},
+	["mail"]={16898613613,48,48,820,0},
+	["map"]={16898613613,48,48,306,771},
+	["map-pin"]={16898613613,48,48,820,257},
+	["maximize"]={16898613613,48,48,771,563},
+	["medal"]={16898613613,48,48,563,771},
+	["menu"]={16898613613,48,48,49,820},
+	["message-square"]={16898613613,48,48,355,820},
+	["mic"]={16898613613,48,48,820,612},
+	["minimize"]={16898613613,48,48,918,49},
+	["minus"]={16898613613,48,48,771,196},
+	["monitor"]={16898613613,48,48,404,820},
+	["moon"]={16898613613,48,48,306,918},
+	["mountain"]={16898613613,48,48,869,612},
+	["move"]={16898613613,48,48,453,820},
+	["music"]={16898613613,48,48,967,563},
+	["package"]={16898613613,48,48,918,196},
+	["palette"]={16898613613,48,48,453,918},
+	["panel-left"]={16898613613,48,48,967,453},
+	["pause"]={16898613699,48,48,0,771},
+	["pencil"]={16898613699,48,48,820,257},
+	["percent"]={16898613699,48,48,771,563},
+	["phone"]={16898613699,48,48,0,869},
+	["plane"]={16898613699,48,48,98,820},
+	["play"]={16898613699,48,48,918,257},
+	["plus"]={16898613699,48,48,257,918},
+	["power"]={16898613699,48,48,820,147},
+	["radio"]={16898613699,48,48,306,918},
+	["refresh-cw"]={16898613699,48,48,404,869},
+	["rocket"]={16898613699,48,48,918,147},
+	["save"]={16898613699,48,48,918,453},
+	["scale"]={16898613699,48,48,404,967},
+	["scan"]={16898613699,48,48,967,196},
+	["search"]={16898613699,48,48,918,857},
+	["send"]={16898613699,48,48,967,857},
+	["settings"]={16898613777,48,48,771,257},
+	["shield"]={16898613777,48,48,869,0},
+	["shield-check"]={16898613777,48,48,820,257},
+	["shopping-cart"]={16898613777,48,48,869,257},
+	["skull"]={16898613777,48,48,49,869},
+	["sliders-horizontal"]={16898613777,48,48,820,355},
+	["snowflake"]={16898613777,48,48,771,661},
+	["sparkles"]={16898613777,48,48,918,49},
+	["square"]={16898613777,48,48,869,710},
+	["star"]={16898613777,48,48,967,147},
+	["sun"]={16898613777,48,48,967,453},
+	["sword"]={16898613777,48,48,710,967},
+	["swords"]={16898613777,48,48,967,759},
+	["tag"]={16898613777,48,48,967,906},
+	["target"]={16898613869,48,48,514,771},
+	["terminal"]={16898613869,48,48,820,257},
+	["timer"]={16898613869,48,48,918,0},
+	["toggle-left"]={16898613869,48,48,869,49},
+	["trash-2"]={16898613869,48,48,257,918},
+	["triangle"]={16898613869,48,48,869,98},
+	["trophy"]={16898613869,48,48,820,147},
+	["unlock"]={16898613869,48,48,771,710},
+	["upload"]={16898613869,48,48,612,869},
+	["user"]={16898613869,48,48,661,869},
+	["user-plus"]={16898613869,48,48,918,355},
+	["users"]={16898613869,48,48,967,98},
+	["video"]={16898613869,48,48,355,967},
+	["volume-2"]={16898613869,48,48,771,808},
+	["wallet"]={16898613869,48,48,147,967},
+	["waves"]={16898613869,48,48,820,808},
+	["wifi"]={16898613869,48,48,869,808},
+	["wind"]={16898613869,48,48,820,857},
+	["wrench"]={16898613869,48,48,820,906},
+	["x"]={16898613869,48,48,869,906},
+	["zap"]={16898613869,48,48,918,906},
+}
+
+-- Принимает имя Lucide ("gamepad-2"), числовой id или "rbxassetid://...".
+-- Возвращает готовый набор свойств для ImageLabel либо nil.
+local function resolveIcon(value)
+	if not value or value == 0 or value == "" then return nil end
+
+	if type(value) == "number" then
+		return { image = "rbxassetid://" .. value }
+	end
+
+	local str = tostring(value)
+	if str:match("^rbxassetid://") or str:match("^rbxasset://") or str:match("^rbxthumb://") then
+		return { image = str }
+	end
+	if str:match("^%d+$") then
+		return { image = "rbxassetid://" .. str }
+	end
+
+	local entry = LUCIDE[str:lower():match("^%s*(.-)%s*$")]
+	if not entry then return nil end
+	return {
+		image  = "rbxassetid://" .. entry[1],
+		rect   = Vector2.new(entry[2], entry[3]),
+		offset = Vector2.new(entry[4], entry[5]),
+	}
+end
+
+-- Юникод-глифы (✕ ⌕ ▾ ✓) в Roblox не рендерятся — шрифт подставляет
+-- пустой прямоугольник. Поэтому иконки собираем из повёрнутых фреймов:
+-- всегда чёткие, красятся темой и не зависят от наличия символа в шрифте.
+
+local function iconBar(parent, w, h, rot, ox, oy, key, z)
+	return new("Frame", {
+		Parent = parent,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, ox or 0, 0.5, oy or 0),
+		Size = UDim2.fromOffset(w, h),
+		Rotation = rot or 0,
+		BorderSizePixel = 0,
+		ZIndex = z or 2,
+		Theme = { BackgroundColor3 = key or "Muted" },
+	}, { corner(1) })
+end
+
+local Icons = {}
+
+function Icons.close(box, key, z)
+	iconBar(box, 11, 1.5,  45, 0, 0, key, z)
+	iconBar(box, 11, 1.5, -45, 0, 0, key, z)
+end
+
+function Icons.minimize(box, key, z)
+	iconBar(box, 11, 1.5, 0, 0, 0, key, z)
+end
+
+function Icons.expand(box, key, z)
+	iconBar(box, 11, 1.5, 0, 0, 0, key, z)
+	iconBar(box, 11, 1.5, 90, 0, 0, key, z)
+end
+
+function Icons.chevron(box, key, z)          -- «галочка» вниз
+	iconBar(box, 7, 1.5,  45, -2.1, 0, key, z)
+	iconBar(box, 7, 1.5, -45,  2.1, 0, key, z)
+end
+
+function Icons.check(box, key, z)
+	iconBar(box, 5, 1.6,  45, -2.6, 1.6, key, z)
+	iconBar(box, 9, 1.6, -45,  1.4, -0.4, key, z)
+end
+
+function Icons.search(box, key, z)
+	new("Frame", {
+		Parent = box,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, -1, 0.5, -1),
+		Size = UDim2.fromOffset(9, 9),
+		BackgroundTransparency = 1,
+		ZIndex = z or 2,
+	}, { corner(5), stroke(key or "Muted", 1.4, 0) })
+	iconBar(box, 4.5, 1.4, 45, 3.4, 3.4, key, z)
+end
+
+function Icons.grip(box, key, z)
+	iconBar(box, 9, 1.4, -45,  1.5,  1.5, key, z)
+	iconBar(box, 4, 1.4, -45,  4,    4,   key, z)
+end
+
+-- Квадратный контейнер под иконку — позиционируется как обычный элемент
+local function icon(parent, name, key, size, z)
+	local box = new("Frame", {
+		Parent = parent,
+		Size = UDim2.fromOffset(size or 16, size or 16),
+		BackgroundTransparency = 1,
+		ZIndex = z or 2,
+	})
+	if Icons[name] then Icons[name](box, key, (z or 2) + 1) end
+	return box
+end
+
+-- Тонкая светлая линия по верхней кромке. Классический приём: именно она
+-- создаёт ощущение подсвеченного стекла и объёма у плоской карточки.
+local function topHighlight(parent, inset)
+	return new("Frame", {
+		Parent = parent,
+		Position = UDim2.new(0, inset or 10, 0, 0),
+		Size = UDim2.new(1, -2 * (inset or 10), 0, 1),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0.93,
+		BorderSizePixel = 0,
+		ZIndex = 3,
+	}, {
+		new("UIGradient", {
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 1),
+				NumberSequenceKeypoint.new(0.5, 0),
+				NumberSequenceKeypoint.new(1, 1),
+			}),
+		}),
+	})
 end
 
 local function round(value, decimals)
@@ -659,7 +953,7 @@ function Library:Dialog(opts)
 			TextColor3 = primary and Theme.Backdrop or Theme.Text,
 		}, { corner(9) })
 		if not primary then
-			stroke("Stroke", 1, 0.3).Parent = btn
+			stroke("StrokeSoft", 1, 0).Parent = btn
 			register(btn, "BackgroundColor3", "Card")
 			register(btn, "TextColor3", "Text")
 		end
@@ -677,71 +971,163 @@ end
 --  9. ОБЩИЙ КАРКАС ЭЛЕМЕНТА (строка-карточка)
 --═══════════════════════════════════════════════════════════════════════
 
-local function makeCard(parent, opts, order)
-	local hasDesc = opts.Desc and opts.Desc ~= ""
-	local height = opts.Height or (hasDesc and 54 or 42)
+-- Создаёт новую группу-карточку на странице вкладки. Элементы кладутся
+-- ВНУТРЬ неё строками с волосяными разделителями — именно это отличает
+-- собранный интерфейс настроек от россыпи отдельных плашек.
+local function openSection(tab, titleText)
+	local holder = new("Frame", {
+		Parent = tab.Page,
+		Name = "Section",
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BackgroundTransparency = 1,
+		LayoutOrder = tab._order + 1,
+	}, { list(0) })
+	tab._order += 1
 
-	local card = new("Frame", {
-		Parent = parent,
-		Name = "Item",
-		Size = UDim2.new(1, 0, 0, height),
-		BorderSizePixel = 0,
-		LayoutOrder = order or 1,
-		Theme = { BackgroundColor3 = "Card" },
-	}, { corner(10), stroke("Stroke", 1, 0.55) })
-
-	local title = label({
-		Parent = card,
-		Position = UDim2.fromOffset(14, hasDesc and 9 or 0),
-		Size = UDim2.new(1, -170, 0, hasDesc and 16 or height),
-		TextSize = 13,
-		Text = opts.Text or opts.Name or "Элемент",
-	})
-
-	if hasDesc then
-		label({
-			Parent = card,
-			Position = UDim2.fromOffset(14, 27),
-			Size = UDim2.new(1, -170, 0, 15),
-			Font = FONT,
-			TextSize = 11.5,
-			Text = opts.Desc,
+	local headerLbl
+	if titleText and titleText ~= "" then
+		local head = new("Frame", {
+			Parent = holder,
+			Size = UDim2.new(1, 0, 0, 28),
+			BackgroundTransparency = 1,
+			LayoutOrder = 1,
+		})
+		headerLbl = label({
+			Parent = head,
+			Position = UDim2.fromOffset(2, 6),
+			Size = UDim2.new(1, -4, 0, 16),
+			Font = FONT_SB,
+			TextSize = 12,
+			Text = titleText,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Theme = { TextColor3 = "SubText" },
 		})
 	end
 
+	local groupStroke = stroke("StrokeSoft", 1, 0)
+	local card = new("Frame", {
+		Parent = holder,
+		Name = "Group",
+		Size = UDim2.new(1, 0, 0, 0),
+		AutomaticSize = Enum.AutomaticSize.Y,
+		BorderSizePixel = 0,
+		ClipsDescendants = true,
+		LayoutOrder = 2,
+		Theme = { BackgroundColor3 = "Card" },
+	}, { corner(12), groupStroke, list(0) })
+
+	-- UIGradient умножает цвет фона, поэтому белый сверху оставляет тон
+	-- как есть, а приглушённый снизу делает поверхность темнее. Получается
+	-- освещение сверху вместо плоской заливки.
+	new("UIGradient", {
+		Parent = card,
+		Rotation = 90,
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(222, 222, 228)),
+		}),
+	})
+
+	-- Тот же приём для обводки: сверху светлее, снизу почти растворяется.
+	-- Внутрь карточки линию-подсветку не положить — её подхватит UIListLayout.
+	new("UIGradient", {
+		Parent = groupStroke,
+		Rotation = 90,
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(150, 150, 158)),
+		}),
+	})
+
+	local section = { holder = holder, card = card, rows = 0, header = headerLbl }
+	tab._section = section
+	return section
+end
+
+-- Строка внутри текущей группы. Если группы ещё нет — заводит безымянную.
+local function makeCard(tab, opts)
+	local section = tab._section or openSection(tab, nil)
+	local hasDesc = opts.Desc and opts.Desc ~= ""
+	local height = opts.Height or (hasDesc and 54 or 42)
+
+	local row = new("Frame", {
+		Parent = section.card,
+		Name = "Item",
+		Size = UDim2.new(1, 0, 0, height),
+		BackgroundColor3 = Theme.CardHover,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		LayoutOrder = section.rows + 1,
+	})
+	section.rows += 1
+
+	-- разделитель рисуем сверху у всех строк кроме первой
+	if section.rows > 1 then
+		new("Frame", {
+			Parent = row,
+			Position = UDim2.fromOffset(16, 0),
+			Size = UDim2.new(1, -32, 0, 1),
+			BorderSizePixel = 0,
+			ZIndex = 2,
+			Theme = { BackgroundColor3 = "StrokeSoft" },
+		})
+	end
+
+	local title = label({
+		Parent = row,
+		Position = UDim2.fromOffset(16, hasDesc and 9 or 0),
+		Size = UDim2.new(1, -180, 0, hasDesc and 16 or height),
+		Font = FONT_M,
+		TextSize = 13,
+		Text = opts.Text or opts.Name or "Элемент",
+		TextTruncate = Enum.TextTruncate.AtEnd,
+	})
+
+	if hasDesc then
+		label({
+			Parent = row,
+			Position = UDim2.fromOffset(16, 27),
+			Size = UDim2.new(1, -180, 0, 15),
+			Font = FONT,
+			TextSize = 11.5,
+			Text = opts.Desc,
+			TextTruncate = Enum.TextTruncate.AtEnd,
+			Theme = { TextColor3 = "Muted" },
+		})
+	end
+
 	-- правая зона под сам контрол
 	local slot = new("Frame", {
-		Parent = card,
+		Parent = row,
 		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -12, 0.5, 0),
-		Size = UDim2.fromOffset(opts.SlotWidth or 140, height - 16),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(opts.SlotWidth or 140, height - 12),
 		BackgroundTransparency = 1,
 	})
 
-	-- подсветка при наведении
-	card.MouseEnter:Connect(function()
-		tween(card, EASE_FAST, { BackgroundColor3 = Theme.CardHover })
+	row.MouseEnter:Connect(function()
+		tween(row, EASE_FAST, { BackgroundTransparency = 0.55 })
 	end)
-	card.MouseLeave:Connect(function()
-		tween(card, EASE_FAST, { BackgroundColor3 = Theme.Card })
+	row.MouseLeave:Connect(function()
+		tween(row, EASE_FAST, { BackgroundTransparency = 1 })
 	end)
 
-	return card, slot, title
+	return row, slot, title
 end
 
--- Подсветка карточки при переходе из поиска
-local function flashCard(card)
-	local s = card:FindFirstChildOfClass("UIStroke")
-	if not s then return end
-	local base = s.Color
-	for i = 1, 2 do
-		tween(s, TweenInfo.new(0.18), { Color = Theme.Accent, Transparency = 0 })
-		task.wait(0.2)
-		tween(s, TweenInfo.new(0.18), { Color = base, Transparency = 0.55 })
-		task.wait(0.2)
+-- Подсветка строки при переходе из поиска
+local function flashCard(row)
+	if not row or not row.Parent then return end
+	local base = row.BackgroundColor3
+	for _ = 1, 2 do
+		row.BackgroundColor3 = Theme.Accent
+		tween(row, TweenInfo.new(0.18), { BackgroundTransparency = 0.7 })
+		task.wait(0.22)
+		tween(row, TweenInfo.new(0.18), { BackgroundTransparency = 1 })
+		task.wait(0.22)
 	end
+	row.BackgroundColor3 = base
 end
 
 --═══════════════════════════════════════════════════════════════════════
@@ -766,7 +1152,7 @@ function Library:Window(opts)
 	self.ToggleKey  = opts.ToggleKey or Enum.KeyCode.RightShift
 	self.MinSize    = opts.MinSize or Vector2.new(600, 400)
 
-	local size = opts.Size or UDim2.fromOffset(760, 500)
+	local size = opts.Size or UDim2.fromOffset(720, 470)
 
 	--── корпус ──
 	local Main = new("Frame", {
@@ -805,7 +1191,7 @@ function Library:Window(opts)
 	self.Clip = Clip
 
 	--═══ ЛЕВАЯ ПАНЕЛЬ ═══
-	local SIDEBAR_W = opts.SidebarWidth or 200
+	local SIDEBAR_W = opts.SidebarWidth or 212
 
 	local Sidebar = new("Frame", {
 		Parent = Clip,
@@ -821,72 +1207,80 @@ function Library:Window(opts)
 		Position = UDim2.new(1, 0, 0, 0),
 		Size = UDim2.new(0, 1, 1, 0),
 		BorderSizePixel = 0,
-		BackgroundTransparency = 0.4,
-		Theme = { BackgroundColor3 = "Stroke" },
+		Theme = { BackgroundColor3 = "StrokeSoft" },
 	})
 
 	--── шапка панели: логотип + название ──
 	local Brand = new("Frame", {
 		Parent = Sidebar,
-		Size = UDim2.new(1, 0, 0, 56),
+		Size = UDim2.new(1, 0, 0, 62),
 		BackgroundTransparency = 1,
 	})
 
 	local logo = new("Frame", {
 		Parent = Brand,
-		Position = UDim2.fromOffset(16, 16),
-		Size = UDim2.fromOffset(24, 24),
+		Position = UDim2.fromOffset(18, 18),
+		Size = UDim2.fromOffset(26, 26),
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Accent" },
 	}, {
-		corner(7),
-		registerGradient(new("UIGradient", { Rotation = 45 }), "Accent", "Accent2"),
+		corner(8),
+		registerGradient(new("UIGradient", { Rotation = 55 }), "Accent", "Accent2"),
 	})
+
+	-- Внутри логотипа — повёрнутый квадрат: абстрактный знак вместо
+	-- глифа, поэтому не зависит от шрифта и выглядит осмысленно.
+	new("Frame", {
+		Parent = logo,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(9, 9),
+		Rotation = 45,
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0.15,
+		BorderSizePixel = 0,
+		ZIndex = 2,
+	}, { corner(2) })
 
 	label({
 		Parent = Brand,
-		Position = UDim2.fromOffset(50, 15),
-		Size = UDim2.new(1, -60, 0, 15),
+		Position = UDim2.fromOffset(54, 18),
+		Size = UDim2.new(1, -66, 0, 15),
 		Font = FONT_B,
-		TextSize = 13.5,
+		TextSize = 14,
 		Text = self.Title,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 	})
 	label({
 		Parent = Brand,
-		Position = UDim2.fromOffset(50, 30),
-		Size = UDim2.new(1, -60, 0, 13),
+		Position = UDim2.fromOffset(54, 33),
+		Size = UDim2.new(1, -66, 0, 13),
 		Font = FONT,
 		TextSize = 11,
 		Text = self.Subtitle,
+		TextTruncate = Enum.TextTruncate.AtEnd,
 		Theme = { TextColor3 = "Muted" },
 	})
 
 	--── поиск по всем вкладкам ──
 	local SearchBox = new("Frame", {
 		Parent = Sidebar,
-		Position = UDim2.fromOffset(12, 58),
-		Size = UDim2.new(1, -24, 0, 32),
+		Position = UDim2.fromOffset(14, 66),
+		Size = UDim2.new(1, -28, 0, 34),
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Inset" },
-	}, { corner(9), stroke("Stroke", 1, 0.5) })
+	}, { corner(9), stroke("StrokeSoft", 1, 0) })
 
-	label({
-		Parent = SearchBox,
-		Position = UDim2.fromOffset(10, 0),
-		Size = UDim2.fromOffset(16, 32),
-		TextSize = 12,
-		Text = "⌕",
-		Theme = { TextColor3 = "Muted" },
-	})
+	local searchIcon = icon(SearchBox, "search", "Muted", 16)
+	searchIcon.Position = UDim2.fromOffset(11, 9)
 
 	local SearchInput = new("TextBox", {
 		Parent = SearchBox,
-		Position = UDim2.fromOffset(28, 0),
-		Size = UDim2.new(1, -38, 1, 0),
+		Position = UDim2.fromOffset(33, 0),
+		Size = UDim2.new(1, -43, 1, 0),
 		BackgroundTransparency = 1,
 		Font = FONT,
-		TextSize = 12,
+		TextSize = 12.5,
 		Text = "",
 		PlaceholderText = "Поиск по настройкам",
 		ClearTextOnFocus = false,
@@ -894,11 +1288,21 @@ function Library:Window(opts)
 		Theme = { TextColor3 = "Text", PlaceholderColor3 = "Muted" },
 	})
 
+	do  -- подсветка рамки поиска при фокусе
+		local edge = SearchBox:FindFirstChildOfClass("UIStroke")
+		SearchInput.Focused:Connect(function()
+			tween(edge, EASE_FAST, { Color = Theme.Accent })
+		end)
+		SearchInput.FocusLost:Connect(function()
+			tween(edge, EASE_FAST, { Color = Theme.StrokeSoft })
+		end)
+	end
+
 	--── список вкладок ──
 	local TabList = new("ScrollingFrame", {
 		Parent = Sidebar,
-		Position = UDim2.fromOffset(0, 100),
-		Size = UDim2.new(1, 0, 1, -142),
+		Position = UDim2.fromOffset(0, 110),
+		Size = UDim2.new(1, 0, 1, -156),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		ScrollBarThickness = 2,
@@ -906,7 +1310,7 @@ function Library:Window(opts)
 		CanvasSize = UDim2.new(),
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		Theme = { ScrollBarImageColor3 = "Muted" },
-	}, { padding(4, 8, 12, 12), list(4) })
+	}, { padding(4, 8, 14, 14), list(3) })
 	self.TabList = TabList
 
 	--── подвал панели ──
@@ -914,28 +1318,46 @@ function Library:Window(opts)
 		Parent = Sidebar,
 		AnchorPoint = Vector2.new(0, 1),
 		Position = UDim2.new(0, 0, 1, 0),
-		Size = UDim2.new(1, 0, 0, 42),
+		Size = UDim2.new(1, 0, 0, 46),
 		BackgroundTransparency = 1,
 	})
 	new("Frame", {
 		Parent = Footer,
-		Size = UDim2.new(1, -24, 0, 1),
-		Position = UDim2.fromOffset(12, 0),
+		Size = UDim2.new(1, -28, 0, 1),
+		Position = UDim2.fromOffset(14, 0),
 		BorderSizePixel = 0,
-		BackgroundTransparency = 0.5,
-		Theme = { BackgroundColor3 = "Stroke" },
+		Theme = { BackgroundColor3 = "StrokeSoft" },
 	})
 	label({
 		Parent = Footer,
-		Position = UDim2.fromOffset(16, 0),
-		Size = UDim2.new(1, -32, 1, 0),
-		Font = FONT,
-		TextSize = 11,
-		Text = (LocalPlayer and LocalPlayer.DisplayName or "игрок")
-			.. "  ·  " .. tostring(self.ToggleKey.Name),
+		Position = UDim2.fromOffset(18, 0),
+		Size = UDim2.new(1, -70, 1, 0),
+		Font = FONT_M,
+		TextSize = 11.5,
+		Text = LocalPlayer and LocalPlayer.DisplayName or "игрок",
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		Theme = { TextColor3 = "SubText" },
+	})
+	-- клавиша показана «клавишным» бейджем, а не строкой через точку
+	local keyBadge = new("Frame", {
+		Parent = Footer,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -14, 0.5, 0),
+		Size = UDim2.fromOffset(52, 20),
+		BorderSizePixel = 0,
+		Theme = { BackgroundColor3 = "Inset" },
+	}, { corner(6), stroke("StrokeSoft", 1, 0) })
+	local keyBadgeText = label({
+		Parent = keyBadge,
+		Size = UDim2.fromScale(1, 1),
+		Font = FONT_M,
+		TextSize = 10.5,
+		Text = tostring(self.ToggleKey.Name),
+		TextXAlignment = Enum.TextXAlignment.Center,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Theme = { TextColor3 = "Muted" },
 	})
+	self._keyBadge = keyBadgeText
 
 	--═══ ПРАВАЯ ЧАСТЬ ═══
 	local Content = new("Frame", {
@@ -951,27 +1373,28 @@ function Library:Window(opts)
 	--── верхняя полоса: заголовок вкладки + кнопки окна ──
 	local TopBar = new("Frame", {
 		Parent = Content,
-		Size = UDim2.new(1, 0, 0, 56),
+		Size = UDim2.new(1, 0, 0, 62),
 		BackgroundTransparency = 1,
 	})
 
 	local TabTitle = label({
 		Parent = TopBar,
-		Position = UDim2.fromOffset(22, 13),
-		Size = UDim2.new(1, -140, 0, 17),
+		Position = UDim2.fromOffset(24, 15),
+		Size = UDim2.new(1, -150, 0, 19),
 		Font = FONT_B,
-		TextSize = 15,
+		TextSize = 16.5,
 		Text = "",
+		TextTruncate = Enum.TextTruncate.AtEnd,
 	})
 	local TabDesc = label({
 		Parent = TopBar,
-		Position = UDim2.fromOffset(22, 31),
-		Size = UDim2.new(1, -140, 0, 13),
+		Position = UDim2.fromOffset(24, 35),
+		Size = UDim2.new(1, -150, 0, 14),
 		Font = FONT,
-		TextSize = 11.5,
+		TextSize = 12,
 		Text = "",
 		TextTruncate = Enum.TextTruncate.AtEnd,
-		Theme = { TextColor3 = "SubText" },
+		Theme = { TextColor3 = "Muted" },
 	})
 	self.TabTitle = TabTitle
 	self.TabDesc  = TabDesc
@@ -982,42 +1405,57 @@ function Library:Window(opts)
 		Position = UDim2.new(0, 0, 1, 0),
 		Size = UDim2.new(1, 0, 0, 1),
 		BorderSizePixel = 0,
-		BackgroundTransparency = 0.4,
-		Theme = { BackgroundColor3 = "Stroke" },
+		Theme = { BackgroundColor3 = "StrokeSoft" },
 	})
 
-	local function winButton(glyph, offsetX, hoverKey)
+	-- Кнопки окна: иконки нарисованы фреймами, а не глифами шрифта,
+	-- поэтому не превращаются в пустые прямоугольники.
+	local function winButton(iconName, offsetX, hoverKey)
 		local b = new("TextButton", {
 			Parent = TopBar,
 			AnchorPoint = Vector2.new(1, 0),
-			Position = UDim2.new(1, offsetX, 0, 16),
-			Size = UDim2.fromOffset(26, 24),
+			Position = UDim2.new(1, offsetX, 0, 17),
+			Size = UDim2.fromOffset(28, 28),
 			BackgroundTransparency = 1,
 			AutoButtonColor = false,
 			BorderSizePixel = 0,
-			Font = FONT_B,
-			TextSize = 13,
-			Text = glyph,
-			Theme = { TextColor3 = "Muted" },
-		}, { corner(7) })
+			Text = "",
+			Theme = { BackgroundColor3 = "CardHover" },
+		}, { corner(8) })
+
+		local box = icon(b, iconName, "Muted", 16, 3)
+		box.AnchorPoint = Vector2.new(0.5, 0.5)
+		box.Position = UDim2.fromScale(0.5, 0.5)
+
+		local function paint(color)
+			for _, part in ipairs(box:GetDescendants()) do
+				if part:IsA("Frame") then
+					tween(part, EASE_FAST, { BackgroundColor3 = color })
+				elseif part:IsA("UIStroke") then
+					tween(part, EASE_FAST, { Color = color })
+				end
+			end
+		end
+
 		b.MouseEnter:Connect(function()
-			tween(b, EASE_FAST, { BackgroundTransparency = 0.88, TextColor3 = Theme[hoverKey] })
-			b.BackgroundColor3 = Theme[hoverKey]
+			tween(b, EASE_FAST, { BackgroundTransparency = 0 })
+			paint(Theme[hoverKey])
 		end)
 		b.MouseLeave:Connect(function()
-			tween(b, EASE_FAST, { BackgroundTransparency = 1, TextColor3 = Theme.Muted })
+			tween(b, EASE_FAST, { BackgroundTransparency = 1 })
+			paint(Theme.Muted)
 		end)
-		return b
+		return b, box
 	end
 
-	local BtnClose = winButton("✕", -14, "Bad")
-	local BtnMin   = winButton("—", -46, "Accent")
+	local BtnClose = winButton("close", -16, "Bad")
+	local BtnMin, BtnMinBox = winButton("minimize", -50, "Text")
 
 	--── прокручиваемая область страницы ──
 	local Pages = new("Frame", {
 		Parent = Content,
-		Position = UDim2.fromOffset(0, 56),
-		Size = UDim2.new(1, 0, 1, -56),
+		Position = UDim2.fromOffset(0, 62),
+		Size = UDim2.new(1, 0, 1, -62),
 		BackgroundTransparency = 1,
 		ClipsDescendants = true,
 	})
@@ -1027,16 +1465,14 @@ function Library:Window(opts)
 	local Grip = new("TextButton", {
 		Parent = Clip,
 		AnchorPoint = Vector2.new(1, 1),
-		Position = UDim2.new(1, -2, 1, -2),
+		Position = UDim2.new(1, -3, 1, -3),
 		Size = UDim2.fromOffset(16, 16),
 		BackgroundTransparency = 1,
 		AutoButtonColor = false,
-		Text = "◢",
-		Font = FONT,
-		TextSize = 11,
+		Text = "",
 		ZIndex = 20,
-		Theme = { TextColor3 = "Muted" },
 	})
+	icon(Grip, "grip", "Muted", 16, 21)
 
 	Grip.InputBegan:Connect(function(input)
 		if not isPressStart(input) then return end
@@ -1058,6 +1494,12 @@ function Library:Window(opts)
 	--═══ ПОВЕДЕНИЕ ОКНА ═══
 	local savedSize = size
 
+	-- иконка кнопки перерисовывается, а не подменяется символом
+	local function setMinIcon(name)
+		for _, c in ipairs(BtnMinBox:GetChildren()) do c:Destroy() end
+		if Icons[name] then Icons[name](BtnMinBox, "Muted", 4) end
+	end
+
 	function self:SetMinimized(state)
 		if self.Minimized == state then return end
 		self.Minimized = state
@@ -1067,10 +1509,10 @@ function Library:Window(opts)
 			Sidebar.Visible = false
 			Pages.Visible = false
 			Grip.Visible = false
-			tween(Main, EASE, { Size = UDim2.fromOffset(320, 56) })
+			tween(Main, EASE, { Size = UDim2.fromOffset(340, 62) })
 			Content.Position = UDim2.new()
 			Content.Size = UDim2.fromScale(1, 1)
-			BtnMin.Text = "+"
+			setMinIcon("expand")
 		else
 			tween(Main, EASE, { Size = savedSize })
 			task.delay(0.22, function()
@@ -1080,7 +1522,7 @@ function Library:Window(opts)
 				Content.Position = UDim2.fromOffset(SIDEBAR_W, 0)
 				Content.Size = UDim2.new(1, -SIDEBAR_W, 1, 0)
 			end)
-			BtnMin.Text = "—"
+			setMinIcon("minimize")
 		end
 	end
 
@@ -1273,16 +1715,26 @@ function Window:SelectTab(tab)
 	for _, t in ipairs(self.Tabs) do
 		local active = (t == tab)
 		t.Page.Visible = active
-		tween(t.Button, EASE_FAST, {
-			BackgroundTransparency = active and 0 or 1,
+		t._btn.BackgroundColor3 = Theme.Card
+		tween(t._btn, EASE_FAST, { BackgroundTransparency = active and 0 or 1 })
+		tween(t._label, EASE_FAST, { TextColor3 = active and Theme.Text or Theme.SubText })
+
+		-- чип активной вкладки заливается акцентным градиентом
+		t._chipGrad.Enabled = active
+		tween(t._chip, EASE_FAST, {
+			BackgroundColor3 = active and Theme.Accent or Theme.Inset,
 		})
-		t.Button.BackgroundColor3 = Theme.Card
-		tween(t.Label, EASE_FAST, { TextColor3 = active and Theme.Text or Theme.SubText })
-		if t.Icon then
-			tween(t.Icon, EASE_FAST, { TextColor3 = active and Theme.Accent or Theme.Muted })
+		tween(t._chipText, EASE_FAST, {
+			TextColor3 = active and Color3.new(1, 1, 1) or Theme.Muted,
+		})
+		if t._chipImage then
+			tween(t._chipImage, EASE_FAST, {
+				ImageColor3 = active and Color3.new(1, 1, 1) or Theme.Muted,
+			})
 		end
-		tween(t.Marker, EASE, {
-			Size = UDim2.new(0, 3, 0, active and 16 or 0),
+
+		tween(t._marker, EASE, {
+			Size = UDim2.new(0, 3, 0, active and 18 or 0),
 			BackgroundTransparency = active and 0 or 1,
 		})
 	end
@@ -1305,82 +1757,121 @@ function Window:Tab(opts)
 	tab.Window = self
 	tab.Items  = {}
 	tab._order = 0
+	tab._section = nil
 
 	--── кнопка в сайдбаре ──
 	local btn = new("TextButton", {
 		Parent = self.TabList,
-		Size = UDim2.new(1, 0, 0, 34),
+		Size = UDim2.new(1, 0, 0, 38),
 		BackgroundTransparency = 1,
 		AutoButtonColor = false,
 		BorderSizePixel = 0,
 		Text = "",
 		LayoutOrder = #self.Tabs + 1,
 		Theme = { BackgroundColor3 = "Card" },
-	}, { corner(8) })
+	}, { corner(9) })
 
 	local marker = new("Frame", {
 		Parent = btn,
 		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, -8, 0.5, 0),
+		Position = UDim2.new(0, -10, 0.5, 0),
 		Size = UDim2.new(0, 3, 0, 0),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
+		ZIndex = 2,
 		Theme = { BackgroundColor3 = "Accent" },
 	}, { corner(2) })
 
-	local iconLbl
-	local textX = 12
-	if opts.Icon then
-		textX = 34
-		if tostring(opts.Icon):match("^rbxassetid") or tostring(opts.Icon):match("^%d+$") then
-			new("ImageLabel", {
-				Parent = btn,
-				Position = UDim2.fromOffset(10, 9),
-				Size = UDim2.fromOffset(16, 16),
-				BackgroundTransparency = 1,
-				Image = tostring(opts.Icon):match("^%d+$")
-					and ("rbxassetid://" .. opts.Icon) or opts.Icon,
-				Theme = { ImageColor3 = "Muted" },
-			})
-		else
-			iconLbl = label({
-				Parent = btn,
-				Position = UDim2.fromOffset(10, 0),
-				Size = UDim2.fromOffset(16, 34),
-				TextSize = 12,
-				Text = tostring(opts.Icon),
-				TextXAlignment = Enum.TextXAlignment.Center,
-				Theme = { TextColor3 = "Muted" },
-			})
-		end
+	-- Вместо юникод-глифа — «чип»: скруглённый квадрат с первой буквой.
+	-- Всегда рендерится, выглядит намеренно и подсвечивается акцентом
+	-- на активной вкладке.
+	local chip = new("Frame", {
+		Parent = btn,
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 8, 0.5, 0),
+		Size = UDim2.fromOffset(24, 24),
+		BorderSizePixel = 0,
+		ZIndex = 2,
+		Theme = { BackgroundColor3 = "Inset" },
+	}, { corner(7) })
+
+	local chipGrad = registerGradient(
+		new("UIGradient", { Rotation = 55, Parent = chip, Enabled = false }),
+		"Accent", "Accent2")
+
+	local iconData = resolveIcon(opts.Icon)
+	local chipImage
+	if iconData then
+		chipImage = new("ImageLabel", {
+			Parent = chip,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(15, 15),
+			BackgroundTransparency = 1,
+			ZIndex = 3,
+			Image = iconData.image,
+			-- нулевой Rect означает «взять всю картинку», для спрайтшита
+			-- подставляются реальные координаты вырезки
+			ImageRectSize = iconData.rect or Vector2.zero,
+			ImageRectOffset = iconData.offset or Vector2.zero,
+			Theme = { ImageColor3 = "Muted" },
+		})
 	end
+
+	-- Запасной вариант, если иконку не указали или имя не распознано:
+	-- первая буква названия. utf8 нужен, чтобы не разрезать кириллицу.
+	local chipText = label({
+		Parent = chip,
+		Size = UDim2.fromScale(1, 1),
+		Font = FONT_B,
+		TextSize = 12,
+		Text = chipImage and "" or (function()
+			local ok, ch = pcall(function()
+				return utf8.char(utf8.codepoint(tab.Name, 1))
+			end)
+			return (ok and ch or "•"):upper()
+		end)(),
+		TextXAlignment = Enum.TextXAlignment.Center,
+		ZIndex = 3,
+		Theme = { TextColor3 = "Muted" },
+	})
 
 	local nameLbl = label({
 		Parent = btn,
-		Position = UDim2.fromOffset(textX, 0),
-		Size = UDim2.new(1, -textX - 8, 1, 0),
-		TextSize = 12.5,
+		Position = UDim2.fromOffset(42, 0),
+		Size = UDim2.new(1, -52, 1, 0),
+		Font = FONT_M,
+		TextSize = 13,
 		Text = tab.Name,
 		TextTruncate = Enum.TextTruncate.AtEnd,
+		ZIndex = 2,
 		Theme = { TextColor3 = "SubText" },
 	})
 
 	btn.MouseEnter:Connect(function()
 		if self.ActiveTab ~= tab then
-			tween(btn, EASE_FAST, { BackgroundTransparency = 0.55 })
+			tween(btn, EASE_FAST, { BackgroundTransparency = 0.4 })
+			tween(nameLbl, EASE_FAST, { TextColor3 = Theme.Text })
 		end
 	end)
 	btn.MouseLeave:Connect(function()
 		if self.ActiveTab ~= tab then
 			tween(btn, EASE_FAST, { BackgroundTransparency = 1 })
+			tween(nameLbl, EASE_FAST, { TextColor3 = Theme.SubText })
 		end
 	end)
 	btn.MouseButton1Click:Connect(function() self:SelectTab(tab) end)
 
-	tab.Button = btn
-	tab.Label  = nameLbl
-	tab.Icon   = iconLbl
-	tab.Marker = marker
+	-- Внутренние ссылки на элементы сайдбара держим под префиксом «_».
+	-- Без него поле tab.Button перекрывало бы метод Tab:Button через
+	-- __index, и вызов Tab:Button{...} падал бы на попытке вызвать Instance.
+	tab._btn       = btn
+	tab._label     = nameLbl
+	tab._marker    = marker
+	tab._chip      = chip
+	tab._chipText  = chipText
+	tab._chipGrad  = chipGrad
+	tab._chipImage = chipImage
 
 	--── страница ──
 	tab.Page = new("ScrollingFrame", {
@@ -1395,7 +1886,7 @@ function Window:Tab(opts)
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		Visible = false,
 		Theme = { ScrollBarImageColor3 = "Muted" },
-	}, { padding(16, 20, 20, 16), list(7) })
+	}, { padding(18, 24, 24, 20), list(8) })
 
 	table.insert(self.Tabs, tab)
 	if not self.ActiveTab then self:SelectTab(tab) end
@@ -1419,69 +1910,67 @@ end
 --═══════════════════════════════════════════════════════════════════════
 
 --────────────────────────── Заголовок секции ──────────────────────────
+-- Открывает новую группу: последующие элементы лягут внутрь неё строками.
 function Tab:Section(opts)
 	opts = opts or {}
-	local holder = new("Frame", {
-		Parent = self.Page,
-		Size = UDim2.new(1, 0, 0, 26),
-		BackgroundTransparency = 1,
-		LayoutOrder = nextOrder(self),
-	})
-	local lbl = label({
-		Parent = holder,
-		Position = UDim2.fromOffset(4, 8),
-		Size = UDim2.new(1, -8, 0, 14),
-		Font = FONT_B,
-		TextSize = 11,
-		Text = string.upper(opts.Text or opts.Name or "Секция"),
-		Theme = { TextColor3 = "Muted" },
-	})
+	local section = openSection(self, opts.Text or opts.Name)
 	return {
-		Set = function(_, text) lbl.Text = string.upper(text) end,
-		Destroy = function() holder:Destroy() end,
+		Set = function(_, text)
+			if section.header then section.header.Text = text end
+		end,
+		Destroy = function() section.holder:Destroy() end,
 	}
 end
 
 --──────────────────────────── Разделитель ────────────────────────────
+-- Закрывает текущую группу: следующий элемент начнёт новую карточку.
 function Tab:Divider()
-	local holder = new("Frame", {
+	self._section = nil
+	local spacer = new("Frame", {
 		Parent = self.Page,
-		Size = UDim2.new(1, 0, 0, 11),
+		Size = UDim2.new(1, 0, 0, 4),
 		BackgroundTransparency = 1,
 		LayoutOrder = nextOrder(self),
 	})
-	new("Frame", {
-		Parent = holder,
-		Position = UDim2.new(0, 0, 0.5, 0),
-		Size = UDim2.new(1, 0, 0, 1),
-		BorderSizePixel = 0,
-		BackgroundTransparency = 0.5,
-		Theme = { BackgroundColor3 = "Stroke" },
-	})
-	return { Destroy = function() holder:Destroy() end }
+	return { Destroy = function() spacer:Destroy() end }
 end
 
 --────────────────────────────── Текст ──────────────────────────────
 function Tab:Paragraph(opts)
 	opts = opts or {}
-	local card = new("Frame", {
-		Parent = self.Page,
+	local section = self._section or openSection(self, nil)
+
+	local row = new("Frame", {
+		Parent = section.card,
+		Name = "Item",
 		Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
-		BorderSizePixel = 0,
-		LayoutOrder = nextOrder(self),
-		Theme = { BackgroundColor3 = "Card" },
-	}, { corner(10), stroke("Stroke", 1, 0.55), padding(12, 12, 14, 14), list(4) })
+		BackgroundTransparency = 1,
+		LayoutOrder = section.rows + 1,
+	}, { padding(12, 14, 16, 16), list(5) })
+	section.rows += 1
+
+	if section.rows > 1 then
+		new("Frame", {
+			Parent = row,
+			Position = UDim2.fromOffset(0, 0),
+			Size = UDim2.new(1, 0, 0, 1),
+			BorderSizePixel = 0,
+			ZIndex = 2,
+			Theme = { BackgroundColor3 = "StrokeSoft" },
+		})
+	end
 
 	local title = label({
-		Parent = card,
+		Parent = row,
 		Size = UDim2.new(1, 0, 0, 16),
+		Font = FONT_M,
 		TextSize = 13,
 		Text = opts.Text or opts.Title or "Заметка",
 		LayoutOrder = 1,
 	})
 	local body = label({
-		Parent = card,
+		Parent = row,
 		Size = UDim2.new(1, 0, 0, 0),
 		AutomaticSize = Enum.AutomaticSize.Y,
 		Font = FONT,
@@ -1490,23 +1979,23 @@ function Tab:Paragraph(opts)
 		TextWrapped = true,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		LayoutOrder = 2,
-		Theme = { TextColor3 = "SubText" },
+		Theme = { TextColor3 = "Muted" },
 	})
 
-	index(self, title.Text, "текст", card)
+	index(self, title.Text, "текст", row)
 	return {
 		Set = function(_, t, c)
 			if t then title.Text = t end
 			if c then body.Text = c end
 		end,
-		Destroy = function() card:Destroy() end,
+		Destroy = function() row:Destroy() end,
 	}
 end
 
 --────────────────────────────── Кнопка ──────────────────────────────
 function Tab:Button(opts)
 	opts = opts or {}
-	local card, slot = makeCard(self.Page, opts, nextOrder(self))
+	local card, slot = makeCard(self, opts)
 	slot.Size = UDim2.fromOffset(110, 30)
 
 	local btn = new("TextButton", {
@@ -1516,17 +2005,17 @@ function Tab:Button(opts)
 		Size = UDim2.fromOffset(110, 30),
 		AutoButtonColor = false,
 		BorderSizePixel = 0,
-		Font = FONT_M,
-		TextSize = 12,
+		Font = FONT_SB,
+		TextSize = 12.5,
 		Text = opts.ButtonText or "Выполнить",
-		Theme = { BackgroundColor3 = "Inset", TextColor3 = "Text" },
-	}, { corner(8), stroke("Stroke", 1, 0.3) })
+		Theme = { BackgroundColor3 = "CardHover", TextColor3 = "Text" },
+	}, { corner(8), stroke("StrokeSoft", 1, 0) })
 
 	btn.MouseEnter:Connect(function()
-		tween(btn, EASE_FAST, { BackgroundColor3 = Theme.Accent, TextColor3 = Theme.Backdrop })
+		tween(btn, EASE_FAST, { BackgroundColor3 = Theme.Accent, TextColor3 = Color3.new(1, 1, 1) })
 	end)
 	btn.MouseLeave:Connect(function()
-		tween(btn, EASE_FAST, { BackgroundColor3 = Theme.Inset, TextColor3 = Theme.Text })
+		tween(btn, EASE_FAST, { BackgroundColor3 = Theme.CardHover, TextColor3 = Theme.Text })
 	end)
 	btn.MouseButton1Click:Connect(function()
 		tween(btn, TweenInfo.new(0.08), { Size = UDim2.fromOffset(104, 28) })
@@ -1554,7 +2043,7 @@ end
 --────────────────────────────── Тоггл ──────────────────────────────
 function Tab:Toggle(opts)
 	opts = opts or {}
-	local card, slot = makeCard(self.Page, opts, nextOrder(self))
+	local card, slot = makeCard(self, opts)
 	local state = opts.Default == true
 
 	-- Именно Frame, а не TextButton: кликом ловим всю строку целиком
@@ -1564,27 +2053,37 @@ function Tab:Toggle(opts)
 		Parent = slot,
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, 0, 0.5, 0),
-		Size = UDim2.fromOffset(42, 24),
+		Size = UDim2.fromOffset(46, 26),
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Inset" },
-	}, { corner(12), stroke("Stroke", 1, 0.3) })
+	}, { corner(13), stroke("StrokeSoft", 1, 0) })
+
+	-- лёгкое свечение вокруг включённого переключателя
+	local glow = new("UIStroke", {
+		Parent = track_,
+		Thickness = 3,
+		Transparency = 1,
+		Theme = { Color = "Accent" },
+	})
 
 	local knob = new("Frame", {
 		Parent = track_,
 		Position = UDim2.fromOffset(3, 3),
-		Size = UDim2.fromOffset(18, 18),
+		Size = UDim2.fromOffset(20, 20),
 		BorderSizePixel = 0,
+		ZIndex = 2,
 		Theme = { BackgroundColor3 = "Muted" },
-	}, { corner(9) })
+	}, { corner(10) })
 
 	local obj = {}
 
 	function obj:Set(value, silent)
 		state = value and true or false
 		tween(track_, EASE, { BackgroundColor3 = state and Theme.Accent or Theme.Inset })
-		tween(knob, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
-			Position = state and UDim2.fromOffset(21, 3) or UDim2.fromOffset(3, 3),
-			BackgroundColor3 = state and Theme.Backdrop or Theme.Muted,
+		tween(glow, EASE, { Transparency = state and 0.75 or 1 })
+		tween(knob, TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+			Position = state and UDim2.fromOffset(23, 3) or UDim2.fromOffset(3, 3),
+			BackgroundColor3 = state and Color3.new(1, 1, 1) or Theme.Muted,
 		})
 		if opts.Flag then Library.Flags[opts.Flag] = state end
 		if not silent then safeCall(opts.Callback, state) end
@@ -1607,13 +2106,13 @@ end
 --────────────────────────────── Слайдер ──────────────────────────────
 function Tab:Slider(opts)
 	opts = opts or {}
-	opts.Height = opts.Desc and 62 or 54
-	local card, slot, titleLbl = makeCard(self.Page, opts, nextOrder(self))
+	opts.Height = opts.Desc and 66 or 52
+	local card, slot, titleLbl = makeCard(self, opts)
 	slot.Visible = false
-	-- у слайдера низ карточки занимает полоса, поэтому заголовок
+	-- у слайдера низ строки занимает полоса, поэтому заголовок
 	-- прижимаем к верху, а не центрируем по всей высоте
-	titleLbl.Position = UDim2.fromOffset(14, 9)
-	titleLbl.Size = UDim2.new(1, -110, 0, 16)
+	titleLbl.Position = UDim2.fromOffset(16, 9)
+	titleLbl.Size = UDim2.new(1, -120, 0, 16)
 
 	local minV     = opts.Min or 0
 	local maxV     = opts.Max or 100
@@ -1624,10 +2123,10 @@ function Tab:Slider(opts)
 	local valueLbl = label({
 		Parent = card,
 		AnchorPoint = Vector2.new(1, 0),
-		Position = UDim2.new(1, -14, 0, opts.Desc and 9 or 8),
-		Size = UDim2.fromOffset(90, 16),
-		Font = FONT_B,
-		TextSize = 12.5,
+		Position = UDim2.new(1, -16, 0, 9),
+		Size = UDim2.fromOffset(100, 16),
+		Font = FONT_SB,
+		TextSize = 13,
 		Text = "",
 		TextXAlignment = Enum.TextXAlignment.Right,
 		Theme = { TextColor3 = "Accent" },
@@ -1636,8 +2135,8 @@ function Tab:Slider(opts)
 	local bar = new("Frame", {
 		Parent = card,
 		AnchorPoint = Vector2.new(0, 1),
-		Position = UDim2.new(0, 14, 1, -14),
-		Size = UDim2.new(1, -28, 0, 6),
+		Position = UDim2.new(0, 16, 1, -14),
+		Size = UDim2.new(1, -32, 0, 6),
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Inset" },
 	}, { corner(3) })
@@ -1656,11 +2155,11 @@ function Tab:Slider(opts)
 		Parent = bar,
 		AnchorPoint = Vector2.new(0.5, 0.5),
 		Position = UDim2.fromScale(0, 0.5),
-		Size = UDim2.fromOffset(12, 12),
+		Size = UDim2.fromOffset(14, 14),
+		BackgroundColor3 = Color3.new(1, 1, 1),
 		BorderSizePixel = 0,
 		ZIndex = 3,
-		Theme = { BackgroundColor3 = "Text" },
-	}, { corner(6) })
+	}, { corner(7), stroke("Backdrop", 2, 0.55) })
 
 	local obj = {}
 
@@ -1685,13 +2184,13 @@ function Tab:Slider(opts)
 
 	bar.InputBegan:Connect(function(input)
 		if not isPressStart(input) then return end
-		tween(knob, EASE_FAST, { Size = UDim2.fromOffset(16, 16) })
+		tween(knob, EASE_FAST, { Size = UDim2.fromOffset(18, 18) })
 		fromX(input.Position.X)
 		activeDrag = function(i) fromX(i.Position.X) end
 	end)
 	onInput("Ended", function(input)
 		if isPressStart(input) then
-			tween(knob, EASE_FAST, { Size = UDim2.fromOffset(12, 12) })
+			tween(knob, EASE_FAST, { Size = UDim2.fromOffset(14, 14) })
 		end
 	end)
 
@@ -1704,7 +2203,7 @@ end
 --──────────────────────────── Выпадающий список ────────────────────────────
 function Tab:Dropdown(opts)
 	opts = opts or {}
-	local card, slot = makeCard(self.Page, opts, nextOrder(self))
+	local card, slot = makeCard(self, opts)
 	slot.Size = UDim2.fromOffset(160, 30)
 
 	local options  = opts.Options or opts.Values or {}
@@ -1720,7 +2219,7 @@ function Tab:Dropdown(opts)
 		BorderSizePixel = 0,
 		Text = "",
 		Theme = { BackgroundColor3 = "Inset" },
-	}, { corner(8), stroke("Stroke", 1, 0.3) })
+	}, { corner(8), stroke("StrokeSoft", 1, 0) })
 
 	local display = label({
 		Parent = button,
@@ -1733,16 +2232,9 @@ function Tab:Dropdown(opts)
 		Theme = { TextColor3 = "SubText" },
 	})
 
-	local arrow = label({
-		Parent = button,
-		AnchorPoint = Vector2.new(1, 0.5),
-		Position = UDim2.new(1, -10, 0.5, 0),
-		Size = UDim2.fromOffset(12, 12),
-		TextSize = 10,
-		Text = "▾",
-		TextXAlignment = Enum.TextXAlignment.Center,
-		Theme = { TextColor3 = "Muted" },
-	})
+	local arrow = icon(button, "chevron", "Muted", 14)
+	arrow.AnchorPoint = Vector2.new(1, 0.5)
+	arrow.Position = UDim2.new(1, -10, 0.5, 0)
 
 	--── меню в слое оверлея ──
 	local menu = new("Frame", {
@@ -2011,7 +2503,7 @@ end
 --──────────────────────────── Поле ввода ────────────────────────────
 function Tab:Input(opts)
 	opts = opts or {}
-	local card, slot = makeCard(self.Page, opts, nextOrder(self))
+	local card, slot = makeCard(self, opts)
 	slot.Size = UDim2.fromOffset(170, 30)
 
 	local box = new("Frame", {
@@ -2021,7 +2513,7 @@ function Tab:Input(opts)
 		Size = UDim2.fromOffset(170, 30),
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Inset" },
-	}, { corner(8), stroke("Stroke", 1, 0.3) })
+	}, { corner(8), stroke("StrokeSoft", 1, 0) })
 
 	local input = new("TextBox", {
 		Parent = box,
@@ -2042,7 +2534,7 @@ function Tab:Input(opts)
 		tween(border, EASE_FAST, { Color = Theme.Accent, Transparency = 0 })
 	end)
 	input.FocusLost:Connect(function(enter)
-		tween(border, EASE_FAST, { Color = Theme.Stroke, Transparency = 0.3 })
+		tween(border, EASE_FAST, { Color = Theme.StrokeSoft, Transparency = 0 })
 		if opts.Numeric then
 			local n = tonumber(input.Text)
 			input.Text = n and tostring(n) or ""
@@ -2072,7 +2564,7 @@ end
 --────────────────────────────── Кейбинд ──────────────────────────────
 function Tab:Keybind(opts)
 	opts = opts or {}
-	local card, slot = makeCard(self.Page, opts, nextOrder(self))
+	local card, slot = makeCard(self, opts)
 	slot.Size = UDim2.fromOffset(110, 30)
 
 	local btn = new("TextButton", {
@@ -2086,7 +2578,7 @@ function Tab:Keybind(opts)
 		TextSize = 12,
 		Text = "—",
 		Theme = { BackgroundColor3 = "Inset", TextColor3 = "SubText" },
-	}, { corner(8), stroke("Stroke", 1, 0.3) })
+	}, { corner(8), stroke("StrokeSoft", 1, 0) })
 
 	local entry = { key = nil, fire = function() end }
 	table.insert(keybinds, entry)
@@ -2144,7 +2636,7 @@ end
 --──────────────────────────── Выбор цвета ────────────────────────────
 function Tab:Colorpicker(opts)
 	opts = opts or {}
-	local card, slot = makeCard(self.Page, opts, nextOrder(self))
+	local card, slot = makeCard(self, opts)
 	slot.Size = UDim2.fromOffset(48, 26)
 
 	local color = opts.Default or Color3.fromRGB(122, 140, 255)
@@ -2368,7 +2860,10 @@ local function encodeValue(v)
 	if typeof(v) == "Color3" then
 		return { __t = "Color3", r = v.R, g = v.G, b = v.B }
 	elseif typeof(v) == "EnumItem" then
-		return { __t = "Enum", e = v.EnumType.Name, n = v.Name }
+		-- У объекта Enum нет свойства .Name (обращение к нему кидает ошибку),
+		-- поэтому имя типа достаём из tostring: "Enum.KeyCode" либо "KeyCode".
+		local enumName = (tostring(v.EnumType):gsub("^Enum%.", ""))
+		return { __t = "Enum", e = enumName, n = v.Name }
 	elseif type(v) == "table" then
 		local out = {}
 		for i, item in ipairs(v) do out[i] = encodeValue(item) end
@@ -2475,7 +2970,7 @@ function Window:SettingsTab(opts)
 	opts = opts or {}
 	local tab = self:Tab{
 		Name = opts.Name or "Настройки",
-		Icon = opts.Icon or "⚙",
+		Icon = opts.Icon or "settings",
 		Desc = "Тема, конфигурации и управление интерфейсом",
 	}
 
@@ -2494,7 +2989,11 @@ function Window:SettingsTab(opts)
 	tab:Keybind{
 		Text = "Показать / скрыть", Desc = "Клавиша переключения окна",
 		Default = self.ToggleKey,
-		Callback = function(key) if key then self.ToggleKey = key end end,
+		Callback = function(key)
+			if not key then return end
+			self.ToggleKey = key
+			if self._keyBadge then self._keyBadge.Text = tostring(key.Name) end
+		end,
 	}
 
 	tab:Section{ Text = "Конфигурации" }
