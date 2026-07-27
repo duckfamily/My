@@ -817,6 +817,9 @@ local function recolorIcon(box, key)
 		elseif part:IsA("UIStroke") then
 			setThemeKey(part, "Color", key)
 			tween(part, EASE_FAST, { Color = color })
+		elseif part:IsA("ImageLabel") or part:IsA("ImageButton") then
+			setThemeKey(part, "ImageColor3", key)
+			tween(part, EASE_FAST, { ImageColor3 = color })
 		end
 	end
 end
@@ -841,7 +844,24 @@ local function icon(parent, name, key, size, z)
 		BackgroundTransparency = 1,
 		ZIndex = z or 2,
 	})
-	if Icons[name] then Icons[name](box, key, (z or 2) + 1) end
+	if Icons[name] then
+		Icons[name](box, key, (z or 2) + 1)
+	else
+		local data = resolveIcon(name)
+		if data then
+			new("ImageLabel", {
+				Parent = box,
+				Size = UDim2.fromScale(1, 1),
+				BackgroundTransparency = 1,
+				Image = data.image,
+				ImageRectSize = data.rect or Vector2.zero,
+				ImageRectOffset = data.offset or Vector2.zero,
+				ScaleType = Enum.ScaleType.Fit,
+				ZIndex = (z or 2) + 1,
+				Theme = { ImageColor3 = key or "Muted" },
+			})
+		end
+	end
 	return box
 end
 
@@ -1964,16 +1984,6 @@ local function runKeySystem(window, options, main)
 		Theme = { BackgroundColor3 = "Backdrop" },
 	}, { corner(14) })
 	surfaceNoise(gate, 300, 0.92)
-
-	local glow = assetLayer(gate, "AccentGlow", {
-		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = UDim2.fromScale(0.5, 0.38),
-		Size = UDim2.fromOffset(620, 300),
-		ImageTransparency = 0.88,
-		ZIndex = 301,
-		Theme = { ImageColor3 = "Accent" },
-	})
-	if glow then glow.Rotation = 90 end
 
 	local card = new("Frame", {
 		Parent = gate,
