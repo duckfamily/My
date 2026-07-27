@@ -1680,6 +1680,581 @@ end
 --  10. ОКНО
 --═══════════════════════════════════════════════════════════════════════
 
+local KEY_PROVIDER_META = {
+	WorkInk = {
+		Name = "Work.ink",
+		Description = "Short link and unlock tasks",
+		Icon = "link",
+	},
+	LootLabs = {
+		Name = "LootLabs",
+		Description = "Content locker and offers",
+		Icon = "gift",
+	},
+}
+
+local function keyCacheStem(value)
+	local text = asText(value, "default")
+	text = text:gsub("[^%w%-_]", "_"):gsub("_+", "_")
+	text = text:gsub("^_+", ""):gsub("_+$", "")
+	if text == "" then text = "default" end
+	return text:sub(1, 48)
+end
+
+local function keyCacheFile(window, config, provider)
+	local owner = config.CacheKey or window.ConfigName or window.Title or game.PlaceId
+	return "AuroraUI/keys/" .. keyCacheStem(owner) .. "_" .. provider.Id:lower() .. ".json"
+end
+
+local function ensureKeyCacheFolder()
+	if not FS.mkdir or not FS.isdir then return end
+	for _, folder in ipairs({ "AuroraUI", "AuroraUI/keys" }) do
+		local checked, exists = pcall(FS.isdir, folder)
+		if not checked or not exists then pcall(FS.mkdir, folder) end
+	end
+end
+
+local function readKeyCache(window, config, provider)
+	if config.Remember == false or provider.Remember == false or not HAS_FS or not HttpService then
+		return nil
+	end
+	local path = keyCacheFile(window, config, provider)
+	local checked, exists = pcall(FS.isfile, path)
+	if not checked or not exists then return nil end
+	local read, raw = pcall(FS.read, path)
+	if not read or type(raw) ~= "string" or #raw > 16384 then return nil end
+	local decoded, data = pcall(HttpService.JSONDecode, HttpService, raw)
+	if not decoded or type(data) ~= "table" then return nil end
+	if data.provider ~= provider.Id or type(data.key) ~= "string" or #data.key > 4096 then
+		return nil
+	end
+	if type(data.expiresAt) == "number" and data.expiresAt <= os.time() then
+		if FS.delete then pcall(FS.delete, path) end
+		return nil
+	end
+	return data.key
+end
+
+local function writeKeyCache(window, config, provider, key)
+	if config.Remember == false or provider.Remember == false or not HAS_FS or not HttpService then
+		return false
+	end
+	local duration = math.clamp(
+		finiteNumber(provider.CacheDuration, finiteNumber(config.CacheDuration, 86400)),
+		60,
+		2678400
+	)
+	ensureKeyCacheFolder()
+	local encoded, raw = pcall(HttpService.JSONEncode, HttpService, {
+		provider = provider.Id,
+		key = key,
+		expiresAt = os.time() + duration,
+	})
+	if not encoded then return false end
+	local wrote, result = pcall(FS.write, keyCacheFile(window, config, provider), raw)
+	return wrote and result ~= false
+end
+
+local function clearKeyCache(window, config, provider)
+	if not FS.delete or not FS.isfile then return end
+	local path = keyCacheFile(window, config, provider)
+	local checked, exists = pcall(FS.isfile, path)
+	if checked and exists then pcall(FS.delete, path) end
+end
+
+local function copyToClipboard(text)
+	local copier
+	if typeof(setclipboard) == "function" then
+		copier = setclipboard
+	elseif typeof(toclipboard) == "function" then
+		copier = toclipboard
+	end
+	if not copier then return false end
+	local ok, result = pcall(copier, text)
+	return ok and result ~= false
+end
+
+local function normalizeKeyProviders(config)
+	local source = type(config.Providers) == "table" and config.Providers or {}
+	local providers = {}
+
+	local function add(id)
+		local meta = KEY_PROVIDER_META[id]
+		local raw = source[id] or source[meta.Name] or config[id]
+		if type(raw) == "string" then raw = { URL = raw } end
+		raw = type(raw) == "table" and raw or {}
+		if raw.Enabled == false then return end
+
+		local url = raw.GetKeyURL or raw.URL or raw.Link
+		if url == nil then
+			url = id == "WorkInk" and config.WorkInkURL or config.LootLabsURL
+		end
+
+		table.insert(providers, {
+			Id = id,
+			Name = asText(raw.Name, meta.Name),
+			Description = asText(raw.Description, meta.Description),
+			Icon = raw.Icon or meta.Icon,
+			GetKeyURL = url,
+			Validate = raw.Validate or raw.Verify or config.Validate or config.Verify,
+			OnGetKey = raw.OnGetKey or config.OnGetKey,
+			Key = raw.Key,
+			Keys = raw.Keys,
+			Remember = raw.Remember,
+			CacheDuration = raw.CacheDuration,
+		})
+	end
+
+	add("WorkInk")
+	add("LootLabs")
+	return providers
+end
+
+local function validateKey(config, provider, key, cached)
+	local validator = provider.Validate
+	if type(validator) == "function" then
+		local ok, valid, message, token = pcall(validator, key, provider.Id, cached == true)
+		if not ok then
+			warn("[AuroraUI] Key validation failed: " .. tostring(valid))
+			return false, "Could not contact the verification service."
+		end
+		if type(valid) == "table" then
+			local result = valid
+			local success = result.Success == true or result.Valid == true
+			return success, asText(result.Message, success and "Access granted." or "Invalid key."),
+				result.Token or result.Key or key
+		end
+		local success = valid == true
+		return success, asText(message, success and "Access granted." or "Invalid key."), token or key
+	end
+
+	local expected = provider.Key or config.Key
+	if expected ~= nil then
+		local success = key == tostring(expected)
+		return success, success and "Access granted." or "Invalid key.", key
+	end
+
+	local keys = provider.Keys or config.Keys
+	if type(keys) == "table" then
+		for candidate, enabled in next, keys do
+			local value = type(candidate) == "number" and enabled or candidate
+			if enabled ~= false and key == tostring(value) then
+				return true, "Access granted.", key
+			end
+		end
+		return false, "Invalid key."
+	end
+
+	return false, "No validator is configured for " .. provider.Name .. "."
+end
+
+local function runKeySystem(window, options, main)
+	if options == nil or options == false then return true end
+	local config = type(options) == "table" and options or {}
+	if config.Enabled == false then return true end
+
+	local providers = normalizeKeyProviders(config)
+	if #providers == 0 then
+		warn("[AuroraUI] KeySystem has no enabled providers.")
+		return false
+	end
+
+	window.KeySystemLocked = true
+	local selected = providers[1]
+	local sessionId = HttpService and HttpService:GenerateGUID(false)
+		or tostring(os.time()) .. "-" .. tostring(math.random(100000, 999999))
+	local resolved = false
+	local busy = false
+	local gateEvent = Instance.new("BindableEvent")
+
+	local gate = new("Frame", {
+		Parent = main,
+		Name = "KeySystem",
+		Size = UDim2.fromScale(1, 1),
+		Active = true,
+		ZIndex = 300,
+		Theme = { BackgroundColor3 = "Backdrop" },
+	}, { corner(14) })
+	surfaceNoise(gate, 300, 0.92)
+
+	local glow = assetLayer(gate, "AccentGlow", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.38),
+		Size = UDim2.fromOffset(620, 300),
+		ImageTransparency = 0.88,
+		ZIndex = 301,
+		Theme = { ImageColor3 = "Accent" },
+	})
+	if glow then glow.Rotation = 90 end
+
+	local card = new("Frame", {
+		Parent = gate,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(500, 450),
+		ZIndex = 302,
+		Theme = { BackgroundColor3 = "Content" },
+	}, { corner(16), stroke("Stroke", 1, 0.12) })
+	topSheen(card, 304, 12, 0.78)
+	surfaceNoise(card, 302, 0.94)
+
+	local closeButton = new("TextButton", {
+		Parent = card,
+		AnchorPoint = Vector2.new(1, 0),
+		Position = UDim2.new(1, -16, 0, 16),
+		Size = UDim2.fromOffset(30, 30),
+		BackgroundTransparency = 1,
+		AutoButtonColor = false,
+		Text = "",
+		ZIndex = 306,
+		Theme = { BackgroundColor3 = "CardHover" },
+	}, { corner(8) })
+	local closeBox = icon(closeButton, "close", "Muted", 14, 307)
+	closeBox.AnchorPoint = Vector2.new(0.5, 0.5)
+	closeBox.Position = UDim2.fromScale(0.5, 0.5)
+
+	local keyIconCard = new("Frame", {
+		Parent = card,
+		Position = UDim2.fromOffset(24, 22),
+		Size = UDim2.fromOffset(42, 42),
+		ZIndex = 304,
+		Theme = { BackgroundColor3 = "CardHover" },
+	}, { corner(11), stroke("Accent", 1, 0.45) })
+	local keyIcon = icon(keyIconCard, "key", "Accent", 20, 305)
+	keyIcon.AnchorPoint = Vector2.new(0.5, 0.5)
+	keyIcon.Position = UDim2.fromScale(0.5, 0.5)
+
+	label({
+		Parent = card,
+		Position = UDim2.fromOffset(80, 20),
+		Size = UDim2.new(1, -136, 0, 24),
+		Font = FONT_B,
+		TextSize = 18,
+		Text = asText(config.Title, "Access required"),
+		ZIndex = 304,
+	})
+	label({
+		Parent = card,
+		Position = UDim2.fromOffset(80, 44),
+		Size = UDim2.new(1, -136, 0, 18),
+		Font = FONT_M,
+		TextSize = 12,
+		Text = asText(config.Subtitle, "Choose a provider and unlock the script"),
+		TextTruncate = Enum.TextTruncate.AtEnd,
+		ZIndex = 304,
+		Theme = { TextColor3 = "Muted" },
+	})
+
+	label({
+		Parent = card,
+		Position = UDim2.fromOffset(24, 84),
+		Size = UDim2.new(1, -48, 0, 18),
+		Font = FONT_SB,
+		TextSize = 12,
+		Text = "Choose key provider",
+		ZIndex = 304,
+		Theme = { TextColor3 = "SubText" },
+	})
+
+	local providerButtons = {}
+	local providerWidth = (#providers == 1) and 452 or 220
+	for i, provider in ipairs(providers) do
+		local button = new("TextButton", {
+			Parent = card,
+			Position = UDim2.fromOffset(24 + (i - 1) * 232, 110),
+			Size = UDim2.fromOffset(providerWidth, 66),
+			AutoButtonColor = false,
+			Text = "",
+			ZIndex = 304,
+			Theme = { BackgroundColor3 = "Card" },
+		}, { corner(10), stroke("StrokeSoft", 1, 0) })
+
+		local providerIcon = icon(button, provider.Icon, "Muted", 18, 306)
+		providerIcon.Position = UDim2.fromOffset(15, 15)
+		label({
+			Parent = button,
+			Position = UDim2.fromOffset(45, 10),
+			Size = UDim2.new(1, -56, 0, 20),
+			Font = FONT_SB,
+			TextSize = 13,
+			Text = provider.Name,
+			ZIndex = 306,
+		})
+		label({
+			Parent = button,
+			Position = UDim2.fromOffset(45, 31),
+			Size = UDim2.new(1, -56, 0, 25),
+			Font = FONT_M,
+			TextSize = 11,
+			Text = provider.Description,
+			TextWrapped = true,
+			TextYAlignment = Enum.TextYAlignment.Top,
+			ZIndex = 306,
+			Theme = { TextColor3 = "Muted" },
+		})
+		providerButtons[provider] = { Button = button, Icon = providerIcon }
+	end
+
+	label({
+		Parent = card,
+		Position = UDim2.fromOffset(24, 196),
+		Size = UDim2.new(1, -48, 0, 18),
+		Font = FONT_SB,
+		TextSize = 12,
+		Text = "License key",
+		ZIndex = 304,
+		Theme = { TextColor3 = "SubText" },
+	})
+
+	local inputFrame = new("Frame", {
+		Parent = card,
+		Position = UDim2.fromOffset(24, 222),
+		Size = UDim2.new(1, -48, 0, 44),
+		ZIndex = 304,
+		Theme = { BackgroundColor3 = "Inset" },
+	}, { corner(9), stroke("Stroke", 1, 0.16) })
+	innerShadow(inputFrame, 304, 0.5)
+	local input = new("TextBox", {
+		Parent = inputFrame,
+		Position = UDim2.fromOffset(14, 0),
+		Size = UDim2.new(1, -28, 1, 0),
+		BackgroundTransparency = 1,
+		ClearTextOnFocus = false,
+		Font = FONT_M,
+		TextSize = 13,
+		Text = "",
+		PlaceholderText = asText(config.Placeholder, "Paste your key here"),
+		TextXAlignment = Enum.TextXAlignment.Left,
+		ZIndex = 306,
+		Theme = { TextColor3 = "Text", PlaceholderColor3 = "Muted" },
+	})
+
+	local status = label({
+		Parent = card,
+		Position = UDim2.fromOffset(24, 276),
+		Size = UDim2.new(1, -48, 0, 34),
+		Font = FONT_M,
+		TextSize = 12,
+		Text = "Select a provider, then get and enter your key.",
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		ZIndex = 304,
+		Theme = { TextColor3 = "Muted" },
+	})
+
+	local function actionButton(text, x, primary)
+		return new("TextButton", {
+			Parent = card,
+			Position = UDim2.fromOffset(x, 326),
+			Size = UDim2.fromOffset(220, 42),
+			AutoButtonColor = false,
+			Font = FONT_SB,
+			TextSize = 13,
+			Text = text,
+			ZIndex = 304,
+			Theme = {
+				BackgroundColor3 = primary and "Accent" or "Card",
+				TextColor3 = "Text",
+			},
+		}, { corner(9), stroke(primary and "Accent" or "Stroke", 1, primary and 0.55 or 0.1) })
+	end
+
+	local getButton = actionButton(asText(config.GetKeyText, "Get key"), 24, false)
+	local verifyButton = actionButton(asText(config.VerifyText, "Verify key"), 256, true)
+
+	label({
+		Parent = card,
+		Position = UDim2.fromOffset(24, 388),
+		Size = UDim2.new(1, -48, 0, 36),
+		Font = FONT_M,
+		TextSize = 11,
+		Text = asText(config.Footer, "Your selected provider opens outside Roblox. Never share account passwords."),
+		TextWrapped = true,
+		TextYAlignment = Enum.TextYAlignment.Top,
+		ZIndex = 304,
+		Theme = { TextColor3 = "Muted" },
+	})
+
+	local function setStatus(text, key)
+		if not status.Parent then return end
+		status.Text = asText(text, "")
+		setThemeKey(status, "TextColor3", key or "Muted")
+		status.TextColor3 = Theme[key or "Muted"]
+	end
+
+	local function refreshProviders()
+		for provider, refs in next, providerButtons do
+			local active = provider == selected
+			setThemeKey(refs.Button, "BackgroundColor3", active and "CardHover" or "Card")
+			refs.Button.BackgroundColor3 = Theme[active and "CardHover" or "Card"]
+			local outline = refs.Button:FindFirstChildOfClass("UIStroke")
+			if outline then
+				setThemeKey(outline, "Color", active and "Accent" or "StrokeSoft")
+				outline.Color = Theme[active and "Accent" or "StrokeSoft"]
+				outline.Transparency = active and 0.25 or 0
+			end
+			recolorIcon(refs.Icon, active and "Accent" or "Muted")
+		end
+		window.KeySystemProvider = selected.Id
+	end
+
+	for provider, refs in next, providerButtons do
+		refs.Button.MouseButton1Click:Connect(function()
+			if busy or resolved or selected == provider then return end
+			selected = provider
+			input.Text = ""
+			refreshProviders()
+			setStatus(provider.Name .. " selected. Get a key to continue.", "Muted")
+		end)
+		refs.Button.MouseEnter:Connect(function()
+			if selected ~= provider then
+				tween(refs.Button, EASE_FAST, { BackgroundColor3 = Theme.CardHover })
+			end
+		end)
+		refs.Button.MouseLeave:Connect(function()
+			if selected ~= provider then
+				tween(refs.Button, EASE_FAST, { BackgroundColor3 = Theme.Card })
+			end
+		end)
+	end
+	refreshProviders()
+
+	local function resolveURL(provider)
+		local source = provider.GetKeyURL
+		if type(source) == "function" then
+			local ok, result = pcall(source, sessionId, provider.Id)
+			if not ok then
+				warn("[AuroraUI] GetKeyURL failed: " .. tostring(result))
+				return nil
+			end
+			source = result
+		end
+		local url = type(source) == "string" and source:match("^%s*(.-)%s*$") or nil
+		if not url or url == "" then return nil end
+		return url
+	end
+
+	getButton.MouseButton1Click:Connect(function()
+		if busy or resolved then return end
+		local url = resolveURL(selected)
+		if not url then
+			setStatus("No key link is configured for " .. selected.Name .. ".", "Bad")
+			return
+		end
+
+		if type(selected.OnGetKey) == "function" then
+			local ok, handled, message = pcall(selected.OnGetKey, url, selected.Id, sessionId)
+			if not ok then
+				warn("[AuroraUI] OnGetKey failed: " .. tostring(handled))
+				setStatus("Could not open the key link.", "Bad")
+				return
+			end
+			if handled == false then
+				setStatus(asText(message, "Could not open the key link."), "Bad")
+				return
+			end
+			setStatus(asText(message, selected.Name .. " key page opened."), "Good")
+			return
+		end
+
+		if copyToClipboard(url) then
+			setStatus(selected.Name .. " link copied. Paste it into your browser.", "Good")
+		else
+			setStatus("Clipboard is unavailable. Configure OnGetKey for this executor.", "Bad")
+		end
+	end)
+
+	local function unlock(provider, token, message)
+		if resolved or not main.Parent then return end
+		resolved = true
+		busy = false
+		window.KeySystemLocked = false
+		window.KeySystemProvider = provider.Id
+		writeKeyCache(window, config, provider, token)
+		setStatus(message or "Access granted.", "Good")
+		tween(card, EASE_FAST, { Position = UDim2.new(0.5, 0, 0.5, -8), BackgroundTransparency = 1 })
+		tween(gate, EASE_FAST, { BackgroundTransparency = 1 })
+		task.delay(0.16, function()
+			if gate.Parent then gate:Destroy() end
+		end)
+		gateEvent:Fire(true)
+	end
+
+	local function tryKey(provider, key, cached)
+		if busy or resolved then return end
+		key = type(key) == "string" and key:match("^%s*(.-)%s*$") or ""
+		if key == "" then
+			if not cached then setStatus("Enter a key first.", "Bad") end
+			return
+		end
+
+		busy = true
+		verifyButton.Active = false
+		verifyButton.Text = "Checking..."
+		if not cached then setStatus("Verifying with " .. provider.Name .. "...", "Accent") end
+
+		task.spawn(function()
+			local valid, message, token = validateKey(config, provider, key, cached)
+			if resolved or not gate.Parent then return end
+			busy = false
+			verifyButton.Active = true
+			verifyButton.Text = asText(config.VerifyText, "Verify key")
+			if valid then
+				unlock(provider, asText(token, key), message)
+			else
+				if cached then clearKeyCache(window, config, provider) end
+				setStatus(message, "Bad")
+			end
+		end)
+	end
+
+	verifyButton.MouseButton1Click:Connect(function()
+		tryKey(selected, input.Text, false)
+	end)
+	input.FocusLost:Connect(function(enterPressed)
+		if enterPressed then tryKey(selected, input.Text, false) end
+	end)
+
+	closeButton.MouseButton1Click:Connect(function()
+		if not resolved and main.Parent then main:Destroy() end
+	end)
+	closeButton.MouseEnter:Connect(function()
+		tween(closeButton, EASE_FAST, { BackgroundTransparency = 0 })
+	end)
+	closeButton.MouseLeave:Connect(function()
+		tween(closeButton, EASE_FAST, { BackgroundTransparency = 1 })
+	end)
+
+	local destroyingConnection = main.Destroying:Connect(function()
+		if resolved then return end
+		resolved = true
+		window.KeySystemLocked = false
+		gateEvent:Fire(false)
+	end)
+
+	task.defer(function()
+		for _, provider in ipairs(providers) do
+			if resolved then break end
+			local cached = readKeyCache(window, config, provider)
+			if cached then
+				selected = provider
+				refreshProviders()
+				setStatus("Checking saved " .. provider.Name .. " key...", "Accent")
+				tryKey(provider, cached, true)
+				while busy and not resolved and main.Parent do task.wait() end
+			end
+		end
+		if not resolved and main.Parent then
+			setStatus("Select a provider, then get and enter your key.", "Muted")
+		end
+	end)
+
+	local unlocked = gateEvent.Event:Wait()
+	destroyingConnection:Disconnect()
+	gateEvent:Destroy()
+	return unlocked == true
+end
+
 local Window = {}
 Window.__index = Window
 
@@ -2423,6 +2998,7 @@ function Library:Window(opts)
 	-- клавиша показать/скрыть
 	local stopWindowInput = onInput("Began", function(input, processed)
 		if self.Hidden == nil then return end
+		if self.KeySystemLocked then return end
 		local ctrlK = input.KeyCode == Enum.KeyCode.K
 			and (UserInput:IsKeyDown(Enum.KeyCode.LeftControl)
 				or UserInput:IsKeyDown(Enum.KeyCode.RightControl))
@@ -2648,6 +3224,10 @@ function Library:Window(opts)
 		if not Main.Parent then return false end
 		Main:Destroy()
 		return true
+	end
+
+	if not runKeySystem(self, opts.KeySystem, Main) then
+		return nil
 	end
 
 	return self
