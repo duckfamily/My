@@ -12,7 +12,7 @@
 ║       Config   = "MyScript",   -- папка сохранения настроек          ║
 ║   }                                                                  ║
 ║                                                                      ║
-║   local Main = Win:Tab{ Name = "Главная", Icon = "◆" }               ║
+║   local Main = Win:Tab{ Name = "Главная", Icon = "gamepad-2" }       ║
 ║                                                                      ║
 ║   Main:Section{ Text = "Персонаж" }                                  ║
 ║   Main:Toggle{                                                       ║
@@ -41,10 +41,36 @@ local TweenService  = service("TweenService")
 local UserInput     = service("UserInputService")
 local HttpService   = service("HttpService")
 local Lighting      = service("Lighting")
-local TextService   = service("TextService")
 
 local LocalPlayer = Players and Players.LocalPlayer
 local ENV = (typeof(getgenv) == "function") and getgenv() or _G
+
+-- Загрузи PNG из assets/aurora в Roblox и впиши только id.
+-- Пустой Id безопасен: соответствующий декоративный слой просто не создаётся.
+-- SliceCenter уже соответствует приложенным файлам и менять его не нужно.
+local ASSETS = {
+	SoftShadow = {
+		Id = "",
+		File = "assets/aurora/soft-shadow.png",
+		SliceCenter = Rect.new(32, 32, 96, 96),
+	},
+	InnerShadow = {
+		Id = "",
+		File = "assets/aurora/inner-shadow.png",
+		SliceCenter = Rect.new(24, 24, 72, 72),
+	},
+	AccentGlow = {
+		Id = "",
+		File = "assets/aurora/accent-glow.png",
+		SliceCenter = Rect.new(40, 24, 88, 40),
+		SliceScale = 0.5,
+	},
+	SurfaceNoise = {
+		Id = "",
+		File = "assets/aurora/surface-noise.png",
+		TileSize = UDim2.fromOffset(128, 128),
+	},
+}
 
 -- Файловая система исполнителя (может отсутствовать)
 local FS = {
@@ -72,19 +98,19 @@ end
 -- (Backdrop → Sidebar → Content → Card) дают ощущение глубины.
 local THEMES = {
 	Aurora = {
-		Backdrop   = Color3.fromRGB(9, 9, 11),      -- корпус окна
-		Sidebar    = Color3.fromRGB(13, 13, 16),    -- левая панель
-		Content    = Color3.fromRGB(17, 17, 21),    -- рабочая область
-		Card       = Color3.fromRGB(24, 24, 29),    -- строка элемента
-		CardHover  = Color3.fromRGB(33, 33, 40),
-		Inset      = Color3.fromRGB(12, 12, 15),    -- утопленные поля
-		Stroke     = Color3.fromRGB(42, 42, 51),
-		StrokeSoft = Color3.fromRGB(28, 28, 34),
-		Text       = Color3.fromRGB(245, 245, 248),
-		SubText    = Color3.fromRGB(152, 152, 164),
-		Muted      = Color3.fromRGB(99, 99, 112),
-		Accent     = Color3.fromRGB(110, 127, 255),
-		Accent2    = Color3.fromRGB(170, 120, 255),
+		Backdrop   = Color3.fromRGB(7, 8, 11),       -- корпус окна
+		Sidebar    = Color3.fromRGB(11, 12, 17),     -- левая панель
+		Content    = Color3.fromRGB(14, 15, 20),     -- рабочая область
+		Card       = Color3.fromRGB(20, 22, 29),     -- строка элемента
+		CardHover  = Color3.fromRGB(28, 30, 40),
+		Inset      = Color3.fromRGB(8, 9, 13),       -- утопленные поля
+		Stroke     = Color3.fromRGB(49, 51, 66),
+		StrokeSoft = Color3.fromRGB(31, 33, 43),
+		Text       = Color3.fromRGB(246, 246, 250),
+		SubText    = Color3.fromRGB(158, 159, 174),
+		Muted      = Color3.fromRGB(101, 103, 120),
+		Accent     = Color3.fromRGB(124, 92, 255),
+		Accent2    = Color3.fromRGB(178, 104, 255),
 		Good       = Color3.fromRGB(52, 199, 123),
 		Warn       = Color3.fromRGB(245, 180, 70),
 		Bad        = Color3.fromRGB(250, 90, 110),
@@ -133,18 +159,56 @@ for k, v in next, THEMES.Aurora do Theme[k] = v end
 -- Реестр «инстанс → свойство → ключ темы».
 -- Смена темы проходит по нему и твинит всё разом.
 local ThemeRegistry = {}
-
 local GradientRegistry = {}
+local ThemeWatch = setmetatable({}, { __mode = "k" })
+
+local function removeThemeEntries(inst)
+	for i = #ThemeRegistry, 1, -1 do
+		if ThemeRegistry[i].inst == inst then table.remove(ThemeRegistry, i) end
+	end
+	for i = #GradientRegistry, 1, -1 do
+		if GradientRegistry[i].inst == inst then table.remove(GradientRegistry, i) end
+	end
+	ThemeWatch[inst] = nil
+end
+
+local function watchThemeInstance(inst)
+	if ThemeWatch[inst] ~= nil then return end
+	ThemeWatch[inst] = false
+	local ok, conn = pcall(function()
+		return inst.Destroying:Connect(function() removeThemeEntries(inst) end)
+	end)
+	if ok then ThemeWatch[inst] = conn end
+end
 
 local function register(inst, prop, key)
-	table.insert(ThemeRegistry, { inst = inst, prop = prop, key = key })
+	local entry = { inst = inst, prop = prop, key = key }
+	table.insert(ThemeRegistry, entry)
+	watchThemeInstance(inst)
 	pcall(function() inst[prop] = Theme[key] end)
+	return entry
+end
+
+-- Состояние контролов (активная вкладка, включённый toggle, выбранный
+-- dropdown) меняет не только цвет, но и ключ привязки. Поэтому смена темы
+-- больше не сбрасывает активный элемент к его базовому цвету.
+local function setThemeKey(inst, prop, key)
+	if not inst then return nil end
+	for i = #ThemeRegistry, 1, -1 do
+		local entry = ThemeRegistry[i]
+		if entry.inst == inst and entry.prop == prop then
+			entry.key = key
+			return entry
+		end
+	end
+	return register(inst, prop, key)
 end
 
 -- ColorSequence нельзя твинить как обычное свойство, поэтому градиенты
 -- живут в отдельном реестре и пересобираются при смене темы.
 local function registerGradient(gradient, keyA, keyB)
 	table.insert(GradientRegistry, { inst = gradient, a = keyA, b = keyB })
+	watchThemeInstance(gradient)
 	pcall(function()
 		gradient.Color = ColorSequence.new(Theme[keyA], Theme[keyB])
 	end)
@@ -189,6 +253,7 @@ end
 -- сразу применяет цвет и подписывает инстанс на смену темы.
 local function new(class, props, children)
 	local inst = Instance.new(class)
+	if inst:IsA("GuiObject") then inst.BorderSizePixel = 0 end
 	local parent
 	for k, v in next, props or {} do
 		if k == "Parent" then
@@ -206,6 +271,152 @@ local function new(class, props, children)
 	for _, child in ipairs(children or {}) do child.Parent = inst end
 	if parent then inst.Parent = parent end
 	return inst
+end
+
+local function asText(value, fallback)
+	if value == nil then return fallback or "" end
+	return tostring(value)
+end
+
+local function finiteNumber(value, fallback)
+	local number = tonumber(value)
+	if not number or number ~= number or number == math.huge or number == -math.huge then
+		return fallback
+	end
+	return number
+end
+
+local function assetUri(value)
+	if value == nil or value == "" or value == 0 then return nil end
+	if type(value) == "number" then return "rbxassetid://" .. value end
+	local str = tostring(value):match("^%s*(.-)%s*$")
+	if str == "" then return nil end
+	if str:match("^%d+$") then return "rbxassetid://" .. str end
+	if str:match("^rbxassetid://") or str:match("^rbxasset://") then return str end
+	return nil
+end
+
+-- Единая фабрика растровых примитивов. Она намеренно ничего не создаёт,
+-- пока пользователь не вписал Id: геометрический fallback библиотеки остаётся прежним.
+local function assetLayer(parent, name, props)
+	local def = ASSETS[name]
+	local image = def and assetUri(def.Id)
+	if not image then return nil end
+
+	local base = {
+		Parent = parent,
+		Name = "Aurora" .. name,
+		BackgroundTransparency = 1,
+		BorderSizePixel = 0,
+		Image = image,
+	}
+	if def.SliceCenter then
+		base.ScaleType = Enum.ScaleType.Slice
+		base.SliceCenter = def.SliceCenter
+		if def.SliceScale then base.SliceScale = def.SliceScale end
+	elseif def.TileSize then
+		base.ScaleType = Enum.ScaleType.Tile
+		base.TileSize = def.TileSize
+	end
+	for k, v in next, props or {} do base[k] = v end
+	return new("ImageLabel", base)
+end
+
+local function softShadow(parent, z, paddingPixels, transparency)
+	local pad = paddingPixels or 24
+	local image = assetLayer(parent, "SoftShadow", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.new(1, pad * 2, 1, pad * 2),
+		ZIndex = z or 0,
+		ImageTransparency = transparency or 0.2,
+		Theme = { ImageColor3 = "Backdrop" },
+	})
+	if image then return image end
+
+	-- Геометрический fallback: не такой мягкий, как PNG, но окно не
+	-- превращается в плоскую плашку, пока id ассета ещё не заполнен.
+	local holder = new("Frame", {
+		Parent = parent,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		ZIndex = z or 0,
+	})
+	for i = 3, 1, -1 do
+		new("Frame", {
+			Parent = holder,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.new(0.5, 0, 0.5, 3 + i),
+			Size = UDim2.new(1, i * 8, 1, i * 8),
+			BackgroundTransparency = 0.82 + i * 0.045,
+			ZIndex = z or 0,
+			Theme = { BackgroundColor3 = "Backdrop" },
+		}, { new("UICorner", { CornerRadius = UDim.new(0, 14 + i * 2) }) })
+	end
+	return holder
+end
+
+local function innerShadow(parent, z, transparency)
+	local image = assetLayer(parent, "InnerShadow", {
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = z or parent.ZIndex,
+		ImageTransparency = transparency or 0.32,
+		Theme = { ImageColor3 = "Backdrop" },
+	})
+	if image then return image end
+
+	local holder = new("Frame", {
+		Parent = parent,
+		Size = UDim2.fromScale(1, 1),
+		BackgroundTransparency = 1,
+		ZIndex = z or parent.ZIndex,
+	})
+	new("Frame", {
+		Parent = holder,
+		Position = UDim2.fromOffset(2, 1),
+		Size = UDim2.new(1, -4, 0, 1),
+		BackgroundTransparency = 0.28,
+		ZIndex = holder.ZIndex,
+		Theme = { BackgroundColor3 = "Backdrop" },
+	})
+	new("Frame", {
+		Parent = holder,
+		AnchorPoint = Vector2.new(0, 1),
+		Position = UDim2.new(0, 2, 1, -1),
+		Size = UDim2.new(1, -4, 0, 1),
+		BackgroundTransparency = 0.94,
+		ZIndex = holder.ZIndex,
+		Theme = { BackgroundColor3 = "Text" },
+	})
+	return holder
+end
+
+local function floatingShadow(parent, z, transparency)
+	local image = assetLayer(parent, "SoftShadow", {
+		Visible = false,
+		ZIndex = z or 0,
+		ImageTransparency = transparency or 0.34,
+		Theme = { ImageColor3 = "Backdrop" },
+	})
+	if image then return image end
+	return new("Frame", {
+		Parent = parent,
+		Visible = false,
+		ZIndex = z or 0,
+		BackgroundTransparency = 0.68,
+		Theme = { BackgroundColor3 = "Backdrop" },
+	}, { new("UICorner", { CornerRadius = UDim.new(0, 16) }) })
+end
+
+local function surfaceNoise(parent, z, transparency)
+	return assetLayer(parent, "SurfaceNoise", {
+		Size = UDim2.fromScale(1, 1),
+		ZIndex = z or parent.ZIndex,
+		ImageTransparency = transparency or 0.92,
+		Theme = { ImageColor3 = "Text" },
+	})
 end
 
 local function corner(r)
@@ -485,6 +696,32 @@ function Icons.grip(box, key, z)
 	iconBar(box, 4, 1.4, -45,  4,    4,   key, z)
 end
 
+local function recolorIcon(box, key)
+	if not box then return end
+	local color = Theme[key]
+	for _, part in ipairs(box:GetDescendants()) do
+		if part:IsA("Frame") then
+			setThemeKey(part, "BackgroundColor3", key)
+			tween(part, EASE_FAST, { BackgroundColor3 = color })
+		elseif part:IsA("UIStroke") then
+			setThemeKey(part, "Color", key)
+			tween(part, EASE_FAST, { Color = color })
+		end
+	end
+end
+
+local function topSheen(parent, z, inset, transparency)
+	inset = inset or 1
+	return new("Frame", {
+		Parent = parent,
+		Position = UDim2.fromOffset(inset, 1),
+		Size = UDim2.new(1, -inset * 2, 0, 1),
+		BackgroundTransparency = transparency or 0.88,
+		ZIndex = z or parent.ZIndex,
+		Theme = { BackgroundColor3 = "Text" },
+	}, { corner(1) })
+end
+
 -- Квадратный контейнер под иконку — позиционируется как обычный элемент
 local function icon(parent, name, key, size, z)
 	local box = new("Frame", {
@@ -495,28 +732,6 @@ local function icon(parent, name, key, size, z)
 	})
 	if Icons[name] then Icons[name](box, key, (z or 2) + 1) end
 	return box
-end
-
--- Тонкая светлая линия по верхней кромке. Классический приём: именно она
--- создаёт ощущение подсвеченного стекла и объёма у плоской карточки.
-local function topHighlight(parent, inset)
-	return new("Frame", {
-		Parent = parent,
-		Position = UDim2.new(0, inset or 10, 0, 0),
-		Size = UDim2.new(1, -2 * (inset or 10), 0, 1),
-		BackgroundColor3 = Color3.new(1, 1, 1),
-		BackgroundTransparency = 0.93,
-		BorderSizePixel = 0,
-		ZIndex = 3,
-	}, {
-		new("UIGradient", {
-			Transparency = NumberSequence.new({
-				NumberSequenceKeypoint.new(0, 1),
-				NumberSequenceKeypoint.new(0.5, 0),
-				NumberSequenceKeypoint.new(1, 1),
-			}),
-		}),
-	})
 end
 
 local function round(value, decimals)
@@ -549,8 +764,37 @@ local Library = {
 	Alive      = true,
 	_conns     = {},
 	_render    = {},
-	_unloadFns = {},
 }
+
+local function optionFlag(opts)
+	local flag = opts and opts.Flag
+	if flag == nil or flag == "" then return nil end
+	return tostring(flag)
+end
+
+local function registerOption(flag, obj, value)
+	if not flag then return end
+	Library.Options[flag] = obj
+	Library.Flags[flag] = value
+end
+
+local function unregisterOption(flag, obj)
+	if not flag or Library.Options[flag] ~= obj then return end
+	Library.Options[flag] = nil
+	Library.Flags[flag] = nil
+end
+
+local function bindCleanup(inst, fn)
+	local cleaned = false
+	local function cleanup()
+		if cleaned then return end
+		cleaned = true
+		local ok, err = pcall(fn)
+		if not ok then warn("[AuroraUI] очистка элемента: " .. tostring(err)) end
+	end
+	pcall(function() inst.Destroying:Connect(cleanup) end)
+	return cleanup
+end
 
 local function track(conn)
 	if conn then table.insert(Library._conns, conn) end
@@ -587,8 +831,17 @@ end
 local Dispatch = { Began = {}, Changed = {}, Ended = {} }
 
 local function onInput(kind, fn)
-	table.insert(Dispatch[kind], fn)
-	return fn
+	local bucket = Dispatch[kind]
+	if not bucket then return function() end end
+	table.insert(bucket, fn)
+	local connected = true
+	return function()
+		if not connected then return end
+		connected = false
+		for i = #bucket, 1, -1 do
+			if bucket[i] == fn then table.remove(bucket, i) break end
+		end
+	end
 end
 
 local activeDrag = nil       -- функция обновления текущего перетаскивания
@@ -596,9 +849,14 @@ local captureTarget = nil    -- элемент, ожидающий нажати�
 local keybinds = {}          -- список активных кейбиндов
 
 local function fire(kind, input, processed)
-	for _, fn in ipairs(Dispatch[kind]) do
-		local ok, err = pcall(fn, input, processed)
-		if not ok then warn("[AuroraUI] ввод: " .. tostring(err)) end
+	local bucket = Dispatch[kind]
+	-- Обработчик вправе отписаться прямо во время события. Идём по снимку,
+	-- иначе table.remove сдвинет массив и следующий обработчик будет пропущен.
+	for _, fn in ipairs(table.clone(bucket)) do
+		if table.find(bucket, fn) then
+			local ok, err = pcall(fn, input, processed)
+			if not ok then warn("[AuroraUI] ввод: " .. tostring(err)) end
+		end
 	end
 end
 
@@ -645,15 +903,25 @@ local function isPressStart(input)
 end
 
 -- Перетаскивание: handle тянет target. Один общий обработчик движения.
+local viewport
 local function draggable(handle, target, onMove)
 	handle.InputBegan:Connect(function(input)
 		if not isPressStart(input) then return end
-		local origin, startPos = input.Position, target.Position
+		local origin = input.Position
+		local startAbs = target.AbsolutePosition
+		local startSize = target.AbsoluteSize
+		local anchor = target.AnchorPoint
 		activeDrag = function(i)
 			local d = i.Position - origin
-			target.Position = UDim2.new(
-				startPos.X.Scale, startPos.X.Offset + d.X,
-				startPos.Y.Scale, startPos.Y.Offset + d.Y
+			local vp = viewport and viewport() or Vector2.new(1920, 1080)
+			local minX = -startSize.X + 48
+			local maxX = math.max(minX, vp.X - 48)
+			local maxY = math.max(0, vp.Y - 48)
+			local x = math.clamp(startAbs.X + d.X, minX, maxX)
+			local y = math.clamp(startAbs.Y + d.Y, 0, maxY)
+			target.Position = UDim2.fromOffset(
+				x + startSize.X * anchor.X,
+				y + startSize.Y * anchor.Y
 			)
 			if onMove then onMove() end
 		end
@@ -701,7 +969,7 @@ local Overlay = new("Frame", {
 	ZIndex = 500,
 })
 
-local function viewport()
+viewport = function()
 	local cam = workspace.CurrentCamera
 	return cam and cam.ViewportSize or Vector2.new(1920, 1080)
 end
@@ -753,6 +1021,17 @@ local function setBlur(amount)
 	tween(Blur, EASE_SLOW, { Size = amount })
 end
 
+local function refreshBlur()
+	local amount = 0
+	for _, window in ipairs(Library.Windows) do
+		if window.Acrylic and not window.Hidden and window.Frame and window.Frame.Parent then
+			amount = 14
+			break
+		end
+	end
+	setBlur(amount)
+end
+
 --═══════════════════════════════════════════════════════════════════════
 --  7. УВЕДОМЛЕНИЯ
 --═══════════════════════════════════════════════════════════════════════
@@ -760,8 +1039,8 @@ end
 local ToastLayer = new("Frame", {
 	Parent = Gui,
 	Name = "Toasts",
-	AnchorPoint = Vector2.new(1, 0),
-	Position = UDim2.new(1, -20, 0, 20),
+	AnchorPoint = Vector2.new(1, 1),
+	Position = UDim2.new(1, -20, 1, -20),
 	Size = UDim2.fromOffset(320, 600),
 	BackgroundTransparency = 1,
 	ZIndex = 900,
@@ -769,27 +1048,34 @@ local ToastLayer = new("Frame", {
 	new("UIListLayout", {
 		Padding = UDim.new(0, 10),
 		HorizontalAlignment = Enum.HorizontalAlignment.Right,
+		VerticalAlignment = Enum.VerticalAlignment.Bottom,
 		SortOrder = Enum.SortOrder.LayoutOrder,
 	}),
 })
 
 function Library:Notify(opts)
-	opts = opts or {}
-	local title    = opts.Title or "Уведомление"
-	local content  = opts.Content or opts.Text or ""
-	local duration = opts.Duration or 4
-	local accent   = Theme[opts.Type == "error" and "Bad"
-		or opts.Type == "warn" and "Warn"
-		or opts.Type == "success" and "Good"
-		or "Accent"]
+	if not self.Alive then return nil end
+	opts = type(opts) == "table" and opts or {}
+	local title    = asText(opts.Title, "Уведомление")
+	local content  = asText(opts.Content ~= nil and opts.Content or opts.Text, "")
+	local duration = math.clamp(finiteNumber(opts.Duration, 4), 0.1, 3600)
+	local kind = asText(opts.Type, ""):lower()
+	local accentKey = kind == "error" and "Bad"
+		or kind == "warn" and "Warn"
+		or kind == "success" and "Good"
+		or "Accent"
+	local contentChars = utf8.len(content) or #content
+	local bodyHeight = content ~= "" and math.clamp(math.ceil(contentChars / 42) * 15, 30, 60) or 0
+	local toastHeight = content ~= "" and 42 + bodyHeight or 54
 
 	local card = new("Frame", {
 		Parent = ToastLayer,
-		Size = UDim2.fromOffset(320, content ~= "" and 74 or 54),
+		Size = UDim2.fromOffset(320, toastHeight),
 		BackgroundTransparency = 1,
 		ZIndex = 901,
 		Theme = { BackgroundColor3 = "Card" },
 	}, { corner(12), stroke("Stroke", 1, 1) })
+	softShadow(card, 900, 18, 0.38)
 
 	local shell = new("Frame", {
 		Parent = card,
@@ -797,20 +1083,39 @@ function Library:Notify(opts)
 		BackgroundTransparency = 1,
 		ZIndex = 902,
 	})
+	surfaceNoise(shell, 902, 0.94)
+	topSheen(shell, 904, 12, 0.9)
 
 	new("Frame", {
 		Parent = shell,
 		Size = UDim2.new(0, 3, 1, -22),
 		Position = UDim2.fromOffset(11, 11),
-		BackgroundColor3 = accent,
 		BorderSizePixel = 0,
 		ZIndex = 903,
+		Theme = { BackgroundColor3 = accentKey },
 	}, { corner(2) })
+
+	local statusRing = new("Frame", {
+		Parent = shell,
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 25, 0.5, -2),
+		Size = UDim2.fromOffset(22, 22),
+		BackgroundTransparency = 1,
+		ZIndex = 904,
+	}, { corner(11), stroke(accentKey, 1.5, 0.12) })
+	new("Frame", {
+		Parent = statusRing,
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0.5, 0.5),
+		Size = UDim2.fromOffset(6, 6),
+		ZIndex = 905,
+		Theme = { BackgroundColor3 = accentKey },
+	}, { corner(3) })
 
 	local titleLbl = label({
 		Parent = shell,
-		Position = UDim2.fromOffset(24, 11),
-		Size = UDim2.new(1, -36, 0, 16),
+		Position = UDim2.fromOffset(50, 11),
+		Size = UDim2.new(1, -62, 0, 16),
 		Font = FONT_B,
 		TextSize = 13,
 		Text = title,
@@ -821,8 +1126,8 @@ function Library:Notify(opts)
 	if content ~= "" then
 		bodyLbl = label({
 			Parent = shell,
-			Position = UDim2.fromOffset(24, 30),
-			Size = UDim2.new(1, -36, 0, 32),
+			Position = UDim2.fromOffset(50, 30),
+			Size = UDim2.new(1, -62, 0, bodyHeight),
 			TextSize = 12,
 			Text = content,
 			TextWrapped = true,
@@ -837,26 +1142,29 @@ function Library:Notify(opts)
 		AnchorPoint = Vector2.new(0, 1),
 		Position = UDim2.new(0, 12, 1, -6),
 		Size = UDim2.new(1, -24, 0, 2),
-		BackgroundColor3 = accent,
 		BackgroundTransparency = 0.35,
 		BorderSizePixel = 0,
 		ZIndex = 903,
+		Theme = { BackgroundColor3 = accentKey },
 	}, { corner(1) })
 
-	-- въезд справа
-	card.Position = UDim2.fromOffset(40, 0)
-	tween(card, EASE, { BackgroundTransparency = 0, Position = UDim2.fromOffset(0, 0) })
+	-- UIListLayout управляет Position, поэтому появление анимируем шириной:
+	-- карточка раскрывается от правого края и не спорит с layout.
+	card.Size = UDim2.fromOffset(0, toastHeight)
+	tween(card, EASE, { BackgroundTransparency = 0, Size = UDim2.fromOffset(320, toastHeight) })
 	tween(card:FindFirstChildOfClass("UIStroke"), EASE, { Transparency = 0.4 })
 	tween(bar, TweenInfo.new(duration, Enum.EasingStyle.Linear), { Size = UDim2.new(0, 0, 0, 2) })
 
 	task.delay(duration, function()
 		if not card.Parent then return end
-		tween(card, EASE_FAST, { BackgroundTransparency = 1, Position = UDim2.fromOffset(40, 0) })
+		tween(card, EASE_FAST, { BackgroundTransparency = 1, Size = UDim2.fromOffset(0, toastHeight) })
 		tween(titleLbl, EASE_FAST, { TextTransparency = 1 })
 		if bodyLbl then tween(bodyLbl, EASE_FAST, { TextTransparency = 1 }) end
 		local s = card:FindFirstChildOfClass("UIStroke")
 		if s then tween(s, EASE_FAST, { Transparency = 1 }) end
-		task.delay(0.18, function() card:Destroy() end)
+		task.delay(0.18, function()
+			if card.Parent then card:Destroy() end
+		end)
 	end)
 
 	return card
@@ -867,12 +1175,18 @@ end
 --═══════════════════════════════════════════════════════════════════════
 
 function Library:Dialog(opts)
-	opts = opts or {}
+	if not self.Alive then return nil end
+	opts = type(opts) == "table" and opts or {}
+	local dialogContent = asText(opts.Content, "")
+	local dialogChars = utf8.len(dialogContent) or #dialogContent
+	local contentHeight = math.clamp(math.ceil(dialogChars / 46) * 16, 40, 96)
+	local dialogHeight = 110 + contentHeight
 	local shade = new("Frame", {
 		Parent = Gui,
 		Size = UDim2.fromScale(1, 1),
 		BackgroundColor3 = Color3.new(0, 0, 0),
 		BackgroundTransparency = 1,
+		Active = true,
 		ZIndex = 950,
 	})
 	tween(shade, EASE, { BackgroundTransparency = 0.45 })
@@ -885,6 +1199,15 @@ function Library:Dialog(opts)
 		ZIndex = 951,
 		Theme = { BackgroundColor3 = "Content" },
 	}, { corner(14), stroke("Stroke", 1, 0.25) })
+	softShadow(box, 950, 26, 0.28)
+	assetLayer(box, "AccentGlow", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.5, 0, 0, -4),
+		Size = UDim2.new(0.72, 0, 0, 70),
+		ZIndex = 950,
+		ImageTransparency = 0.76,
+		Theme = { ImageColor3 = "Accent" },
+	})
 
 	local inner = new("Frame", {
 		Parent = box,
@@ -893,22 +1216,24 @@ function Library:Dialog(opts)
 		ZIndex = 952,
 		ClipsDescendants = true,
 	}, { padding(20, 16, 20, 20) })
+	surfaceNoise(inner, 952, 0.94)
+	topSheen(inner, 954, 8, 0.86)
 
 	label({
 		Parent = inner,
 		Size = UDim2.new(1, 0, 0, 20),
 		Font = FONT_B,
 		TextSize = 15,
-		Text = opts.Title or "Подтверждение",
+		Text = asText(opts.Title, "Подтверждение"),
 		ZIndex = 953,
 	})
 
 	label({
 		Parent = inner,
 		Position = UDim2.fromOffset(0, 26),
-		Size = UDim2.new(1, 0, 0, 40),
+		Size = UDim2.new(1, 0, 0, contentHeight),
 		TextSize = 12,
-		Text = opts.Content or "",
+		Text = dialogContent,
 		TextWrapped = true,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		ZIndex = 953,
@@ -932,39 +1257,56 @@ function Library:Dialog(opts)
 	})
 
 	local function close()
+		if not shade.Parent then return end
 		tween(shade, EASE_FAST, { BackgroundTransparency = 1 })
 		tween(box, EASE_FAST, { Size = UDim2.fromOffset(380, 0) })
-		task.delay(0.2, function() shade:Destroy() end)
+		shade.Active = false
+		task.delay(0.2, function()
+			if shade.Parent then shade:Destroy() end
+		end)
 	end
 
-	for i, def in ipairs(opts.Buttons or { { Text = "OK" } }) do
-		local primary = def.Primary or (i == 1 and #(opts.Buttons or {}) <= 1)
+	local buttons = type(opts.Buttons) == "table" and opts.Buttons or nil
+	if not buttons or #buttons == 0 then buttons = { { Text = "OK" } } end
+	local closed = false
+	local function closeOnce()
+		if closed then return false end
+		closed = true
+		close()
+		return true
+	end
+
+	for i, def in ipairs(buttons) do
+		if type(def) ~= "table" then def = { Text = def } end
+		local primary = def.Primary == true or (i == 1 and #buttons == 1)
+		local buttonText = asText(def.Text, "OK")
+		local charCount = utf8.len(buttonText) or #buttonText
 		local btn = new("TextButton", {
 			Parent = row,
-			Size = UDim2.fromOffset(math.max(84, #(def.Text or "") * 9 + 28), 34),
+			Size = UDim2.fromOffset(math.max(84, charCount * 9 + 28), 34),
 			AutoButtonColor = false,
 			BorderSizePixel = 0,
 			Font = FONT_M,
 			TextSize = 12.5,
-			Text = def.Text or "OK",
+			Text = buttonText,
 			LayoutOrder = i,
 			ZIndex = 954,
-			BackgroundColor3 = primary and Theme.Accent or Theme.Card,
-			TextColor3 = primary and Theme.Backdrop or Theme.Text,
+			Theme = {
+				BackgroundColor3 = primary and "Accent" or "Card",
+				TextColor3 = primary and "Backdrop" or "Text",
+			},
 		}, { corner(9) })
+		topSheen(btn, 955, 8, primary and 0.74 or 0.9)
 		if not primary then
 			stroke("StrokeSoft", 1, 0).Parent = btn
-			register(btn, "BackgroundColor3", "Card")
-			register(btn, "TextColor3", "Text")
 		end
 		btn.MouseButton1Click:Connect(function()
-			close()
-			safeCall(def.Callback)
+			if closeOnce() then safeCall(def.Callback) end
 		end)
 	end
 
-	tween(box, EASE, { Size = UDim2.fromOffset(380, 150) })
-	return { Close = close }
+	tween(box, EASE, { Size = UDim2.fromOffset(380, dialogHeight) })
+	return { Close = closeOnce }
 end
 
 --═══════════════════════════════════════════════════════════════════════
@@ -975,6 +1317,7 @@ end
 -- ВНУТРЬ неё строками с волосяными разделителями — именно это отличает
 -- собранный интерфейс настроек от россыпи отдельных плашек.
 local function openSection(tab, titleText)
+	titleText = titleText ~= nil and tostring(titleText) or nil
 	local holder = new("Frame", {
 		Parent = tab.Page,
 		Name = "Section",
@@ -995,17 +1338,24 @@ local function openSection(tab, titleText)
 		})
 		headerLbl = label({
 			Parent = head,
-			Position = UDim2.fromOffset(2, 6),
-			Size = UDim2.new(1, -4, 0, 16),
+			Position = UDim2.fromOffset(14, 6),
+			Size = UDim2.new(1, -16, 0, 16),
 			Font = FONT_SB,
 			TextSize = 12,
 			Text = titleText,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Theme = { TextColor3 = "SubText" },
 		})
+		new("Frame", {
+			Parent = head,
+			AnchorPoint = Vector2.new(0, 0.5),
+			Position = UDim2.new(0, 2, 0.5, 0),
+			Size = UDim2.fromOffset(4, 4),
+			Theme = { BackgroundColor3 = "Accent" },
+		}, { corner(2) })
 	end
 
-	local groupStroke = stroke("StrokeSoft", 1, 0)
+	local groupStroke = stroke("StrokeSoft", 1, 0.12)
 	local card = new("Frame", {
 		Parent = holder,
 		Name = "Group",
@@ -1046,19 +1396,28 @@ local function openSection(tab, titleText)
 end
 
 -- Строка внутри текущей группы. Если группы ещё нет — заводит безымянную.
-local function makeCard(tab, opts)
+local function makeCard(tab, opts, slotWidthOverride, heightOverride)
 	local section = tab._section or openSection(tab, nil)
-	local hasDesc = opts.Desc and opts.Desc ~= ""
-	local height = opts.Height or (hasDesc and 54 or 42)
+	local desc = opts.Desc ~= nil and tostring(opts.Desc) or nil
+	local hasDesc = desc ~= nil and desc ~= ""
+	local height = math.max(32, finiteNumber(
+		heightOverride ~= nil and heightOverride or opts.Height,
+		hasDesc and 54 or 42
+	))
+	local slotWidth = math.max(0, finiteNumber(
+		slotWidthOverride ~= nil and slotWidthOverride or opts.SlotWidth,
+		140
+	))
+	local textReserve = math.max(180, slotWidth + 34)
 
 	local row = new("Frame", {
 		Parent = section.card,
 		Name = "Item",
 		Size = UDim2.new(1, 0, 0, height),
-		BackgroundColor3 = Theme.CardHover,
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		LayoutOrder = section.rows + 1,
+		Theme = { BackgroundColor3 = "CardHover" },
 	})
 	section.rows += 1
 
@@ -1073,14 +1432,25 @@ local function makeCard(tab, opts)
 			Theme = { BackgroundColor3 = "StrokeSoft" },
 		})
 	end
+	surfaceNoise(row, 1, 0.96)
+	topSheen(row, 2, 16, 0.965)
+	local hoverRail = new("Frame", {
+		Parent = row,
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 0, 0.5, 0),
+		Size = UDim2.fromOffset(2, 0),
+		BackgroundTransparency = 1,
+		ZIndex = 4,
+		Theme = { BackgroundColor3 = "Accent" },
+	}, { corner(1) })
 
 	local title = label({
 		Parent = row,
 		Position = UDim2.fromOffset(16, hasDesc and 9 or 0),
-		Size = UDim2.new(1, -180, 0, hasDesc and 16 or height),
+		Size = UDim2.new(1, -textReserve, 0, hasDesc and 16 or height),
 		Font = FONT_M,
 		TextSize = 13,
-		Text = opts.Text or opts.Name or "Элемент",
+		Text = asText(opts.Text ~= nil and opts.Text or opts.Name, "Элемент"),
 		TextTruncate = Enum.TextTruncate.AtEnd,
 	})
 
@@ -1088,10 +1458,10 @@ local function makeCard(tab, opts)
 		label({
 			Parent = row,
 			Position = UDim2.fromOffset(16, 27),
-			Size = UDim2.new(1, -180, 0, 15),
+			Size = UDim2.new(1, -textReserve, 0, 15),
 			Font = FONT,
 			TextSize = 11.5,
-			Text = opts.Desc,
+			Text = desc,
 			TextTruncate = Enum.TextTruncate.AtEnd,
 			Theme = { TextColor3 = "Muted" },
 		})
@@ -1102,15 +1472,23 @@ local function makeCard(tab, opts)
 		Parent = row,
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, -14, 0.5, 0),
-		Size = UDim2.fromOffset(opts.SlotWidth or 140, height - 12),
+		Size = UDim2.fromOffset(slotWidth, height - 12),
 		BackgroundTransparency = 1,
 	})
 
 	row.MouseEnter:Connect(function()
-		tween(row, EASE_FAST, { BackgroundTransparency = 0.55 })
+		tween(row, EASE_FAST, { BackgroundTransparency = 0.42 })
+		tween(hoverRail, EASE_FAST, {
+			Size = UDim2.fromOffset(2, math.min(22, height - 12)),
+			BackgroundTransparency = 0.15,
+		})
 	end)
 	row.MouseLeave:Connect(function()
 		tween(row, EASE_FAST, { BackgroundTransparency = 1 })
+		tween(hoverRail, EASE_FAST, {
+			Size = UDim2.fromOffset(2, 0),
+			BackgroundTransparency = 1,
+		})
 	end)
 
 	return row, slot, title
@@ -1119,15 +1497,20 @@ end
 -- Подсветка строки при переходе из поиска
 local function flashCard(row)
 	if not row or not row.Parent then return end
-	local base = row.BackgroundColor3
+	setThemeKey(row, "BackgroundColor3", "Accent")
 	for _ = 1, 2 do
+		if not row.Parent then return end
 		row.BackgroundColor3 = Theme.Accent
 		tween(row, TweenInfo.new(0.18), { BackgroundTransparency = 0.7 })
 		task.wait(0.22)
+		if not row.Parent then return end
 		tween(row, TweenInfo.new(0.18), { BackgroundTransparency = 1 })
 		task.wait(0.22)
 	end
-	row.BackgroundColor3 = base
+	if row.Parent then
+		setThemeKey(row, "BackgroundColor3", "CardHover")
+		row.BackgroundColor3 = Theme.CardHover
+	end
 end
 
 --═══════════════════════════════════════════════════════════════════════
@@ -1138,48 +1521,65 @@ local Window = {}
 Window.__index = Window
 
 function Library:Window(opts)
-	opts = opts or {}
+	if not self.Alive then return nil end
+	opts = type(opts) == "table" and opts or {}
 	local self = setmetatable({}, Window)
 
-	self.Title      = opts.Title or "Aurora"
-	self.Subtitle   = opts.Subtitle or ("v" .. Library.Version)
+	self.Title      = asText(opts.Title, "Aurora")
+	self.Subtitle   = asText(opts.Subtitle, "v" .. Library.Version)
 	self.Tabs       = {}
 	self.ActiveTab  = nil
 	self.ConfigName = opts.Config or opts.ConfigKey
 	self.Acrylic    = opts.Acrylic ~= false
 	self.Minimized  = false
 	self.Hidden     = false
-	self.ToggleKey  = opts.ToggleKey or Enum.KeyCode.RightShift
-	self.MinSize    = opts.MinSize or Vector2.new(600, 400)
+	self.ToggleKey  = typeof(opts.ToggleKey) == "EnumItem" and opts.ToggleKey or Enum.KeyCode.RightShift
+	self.MinSize    = typeof(opts.MinSize) == "Vector2" and opts.MinSize or Vector2.new(600, 400)
+	self.MinSize = Vector2.new(
+		math.max(320, finiteNumber(self.MinSize.X, 600)),
+		math.max(180, finiteNumber(self.MinSize.Y, 400))
+	)
 
-	local size = opts.Size or UDim2.fromOffset(720, 470)
+	local size = typeof(opts.Size) == "UDim2" and opts.Size or UDim2.fromOffset(720, 470)
+	local savedSize = size
 
 	--── корпус ──
 	local Main = new("Frame", {
 		Parent = Gui,
 		Name = "Window",
 		AnchorPoint = Vector2.new(0.5, 0.5),
-		Position = opts.Position or UDim2.fromScale(0.5, 0.5),
+		Position = typeof(opts.Position) == "UDim2" and opts.Position or UDim2.fromScale(0.5, 0.5),
 		Size = size,
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Backdrop" },
 	}, { corner(14) })
 	self.Frame = Main
 
-	new("ImageLabel", {  -- мягкая тень под окном
-		Parent = Main,
-		BackgroundTransparency = 1,
-		Image = "rbxassetid://5554236805",
-		ImageColor3 = Color3.new(0, 0, 0),
-		ImageTransparency = 0.35,
-		ScaleType = Enum.ScaleType.Slice,
-		SliceCenter = Rect.new(23, 23, 277, 277),
-		Size = UDim2.new(1, 60, 1, 60),
-		Position = UDim2.fromOffset(-30, -30),
+	softShadow(Main, 0, 30, 0.2)
+	assetLayer(Main, "AccentGlow", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0.76, 0, 0, -4),
+		Size = UDim2.new(0.62, 0, 0, 84),
 		ZIndex = 0,
+		ImageTransparency = 0.78,
+		Theme = { ImageColor3 = "Accent" },
 	})
 
-	stroke("Stroke", 1, 0.2).Parent = Main
+	local outerStroke = stroke("Stroke", 1, 0.08)
+	outerStroke.Parent = Main
+	new("UIGradient", {
+		Parent = outerStroke,
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(150, 150, 160)),
+			ColorSequenceKeypoint.new(0.48, Color3.fromRGB(255, 255, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(132, 132, 144)),
+		}),
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.45),
+			NumberSequenceKeypoint.new(0.48, 0.1),
+			NumberSequenceKeypoint.new(1, 0.55),
+		}),
+	})
 
 	local Clip = new("Frame", {
 		Parent = Main,
@@ -1189,9 +1589,11 @@ function Library:Window(opts)
 		ClipsDescendants = true,
 	}, { corner(14) })
 	self.Clip = Clip
+	topSheen(Clip, 30, 14, 0.78)
 
 	--═══ ЛЕВАЯ ПАНЕЛЬ ═══
-	local SIDEBAR_W = opts.SidebarWidth or 212
+	local SIDEBAR_W = math.clamp(finiteNumber(opts.SidebarWidth, 224), 170, 320)
+	self.MinSize = Vector2.new(math.max(self.MinSize.X, SIDEBAR_W + 280), self.MinSize.Y)
 
 	local Sidebar = new("Frame", {
 		Parent = Clip,
@@ -1199,6 +1601,15 @@ function Library:Window(opts)
 		Size = UDim2.new(0, SIDEBAR_W, 1, 0),
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Sidebar" },
+	})
+	surfaceNoise(Sidebar, 1, 0.93)
+	new("UIGradient", {
+		Parent = Sidebar,
+		Rotation = 90,
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(224, 224, 232)),
+		}),
 	})
 
 	new("Frame", {  -- разделитель между панелью и контентом
@@ -1222,10 +1633,20 @@ function Library:Window(opts)
 		Position = UDim2.fromOffset(18, 18),
 		Size = UDim2.fromOffset(26, 26),
 		BorderSizePixel = 0,
+		ZIndex = 2,
 		Theme = { BackgroundColor3 = "Accent" },
 	}, {
 		corner(8),
 		registerGradient(new("UIGradient", { Rotation = 55 }), "Accent", "Accent2"),
+	})
+	topSheen(logo, 4, 3, 0.72)
+	assetLayer(Brand, "AccentGlow", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromOffset(31, 31),
+		Size = UDim2.fromOffset(48, 42),
+		ZIndex = 1,
+		ImageTransparency = 0.5,
+		Theme = { ImageColor3 = "Accent" },
 	})
 
 	-- Внутри логотипа — повёрнутый квадрат: абстрактный знак вместо
@@ -1266,18 +1687,37 @@ function Library:Window(opts)
 	local SearchBox = new("Frame", {
 		Parent = Sidebar,
 		Position = UDim2.fromOffset(14, 66),
-		Size = UDim2.new(1, -28, 0, 34),
+		Size = UDim2.new(1, -28, 0, 36),
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Inset" },
 	}, { corner(9), stroke("StrokeSoft", 1, 0) })
+	innerShadow(SearchBox, 1, 0.42)
+	topSheen(SearchBox, 2, 8, 0.93)
 
 	local searchIcon = icon(SearchBox, "search", "Muted", 16)
-	searchIcon.Position = UDim2.fromOffset(11, 9)
+	searchIcon.Position = UDim2.fromOffset(11, 10)
+
+	local searchKeycap = new("Frame", {
+		Parent = SearchBox,
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -7, 0.5, 0),
+		Size = UDim2.fromOffset(44, 22),
+		Theme = { BackgroundColor3 = "Card" },
+	}, { corner(6), stroke("StrokeSoft", 1, 0.1) })
+	label({
+		Parent = searchKeycap,
+		Size = UDim2.fromScale(1, 1),
+		Font = FONT_M,
+		TextSize = 9.5,
+		Text = "CTRL K",
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Theme = { TextColor3 = "Muted" },
+	})
 
 	local SearchInput = new("TextBox", {
 		Parent = SearchBox,
 		Position = UDim2.fromOffset(33, 0),
-		Size = UDim2.new(1, -43, 1, 0),
+		Size = UDim2.new(1, -88, 1, 0),
 		BackgroundTransparency = 1,
 		Font = FONT,
 		TextSize = 12.5,
@@ -1291,18 +1731,33 @@ function Library:Window(opts)
 	do  -- подсветка рамки поиска при фокусе
 		local edge = SearchBox:FindFirstChildOfClass("UIStroke")
 		SearchInput.Focused:Connect(function()
+			setThemeKey(edge, "Color", "Accent")
 			tween(edge, EASE_FAST, { Color = Theme.Accent })
+			recolorIcon(searchIcon, "Accent")
+			tween(searchKeycap, EASE_FAST, { BackgroundTransparency = 0.35 })
 		end)
 		SearchInput.FocusLost:Connect(function()
+			setThemeKey(edge, "Color", "StrokeSoft")
 			tween(edge, EASE_FAST, { Color = Theme.StrokeSoft })
+			recolorIcon(searchIcon, "Muted")
+			tween(searchKeycap, EASE_FAST, { BackgroundTransparency = 0 })
 		end)
 	end
 
 	--── список вкладок ──
+	label({
+		Parent = Sidebar,
+		Position = UDim2.fromOffset(16, 112),
+		Size = UDim2.new(1, -32, 0, 12),
+		Font = FONT_SB,
+		TextSize = 9.5,
+		Text = "НАВИГАЦИЯ",
+		Theme = { TextColor3 = "Muted" },
+	})
 	local TabList = new("ScrollingFrame", {
 		Parent = Sidebar,
-		Position = UDim2.fromOffset(0, 110),
-		Size = UDim2.new(1, 0, 1, -156),
+		Position = UDim2.fromOffset(0, 130),
+		Size = UDim2.new(1, 0, 1, -176),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
 		ScrollBarThickness = 2,
@@ -1328,10 +1783,40 @@ function Library:Window(opts)
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "StrokeSoft" },
 	})
+	local avatarName = LocalPlayer and LocalPlayer.DisplayName or "A"
+	local avatarOK, avatarInitial = pcall(function()
+		return utf8.char(utf8.codepoint(avatarName, 1)):upper()
+	end)
+	if not avatarOK then avatarInitial = "A" end
+	local avatar = new("Frame", {
+		Parent = Footer,
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 16, 0.5, 0),
+		Size = UDim2.fromOffset(26, 26),
+		Theme = { BackgroundColor3 = "CardHover" },
+	}, { corner(8), stroke("StrokeSoft", 1, 0) })
+	label({
+		Parent = avatar,
+		Size = UDim2.fromScale(1, 1),
+		Font = FONT_B,
+		TextSize = 11,
+		Text = avatarInitial,
+		TextXAlignment = Enum.TextXAlignment.Center,
+		Theme = { TextColor3 = "Accent" },
+	})
+	new("Frame", {
+		Parent = avatar,
+		AnchorPoint = Vector2.new(1, 1),
+		Position = UDim2.new(1, 1, 1, 1),
+		Size = UDim2.fromOffset(7, 7),
+		ZIndex = 3,
+		Theme = { BackgroundColor3 = "Good" },
+	}, { corner(4), stroke("Sidebar", 2, 0) })
+
 	label({
 		Parent = Footer,
-		Position = UDim2.fromOffset(18, 0),
-		Size = UDim2.new(1, -70, 1, 0),
+		Position = UDim2.fromOffset(52, 0),
+		Size = UDim2.new(1, -116, 1, 0),
 		Font = FONT_M,
 		TextSize = 11.5,
 		Text = LocalPlayer and LocalPlayer.DisplayName or "игрок",
@@ -1347,6 +1832,7 @@ function Library:Window(opts)
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Inset" },
 	}, { corner(6), stroke("StrokeSoft", 1, 0) })
+	innerShadow(keyBadge, 1, 0.45)
 	local keyBadgeText = label({
 		Parent = keyBadge,
 		Size = UDim2.fromScale(1, 1),
@@ -1369,18 +1855,52 @@ function Library:Window(opts)
 		Theme = { BackgroundColor3 = "Content" },
 	})
 	self.Content = Content
+	surfaceNoise(Content, 1, 0.93)
+	new("UIGradient", {
+		Parent = Content,
+		Rotation = 90,
+		Color = ColorSequence.new({
+			ColorSequenceKeypoint.new(0, Color3.fromRGB(255, 255, 255)),
+			ColorSequenceKeypoint.new(1, Color3.fromRGB(226, 226, 234)),
+		}),
+	})
 
 	--── верхняя полоса: заголовок вкладки + кнопки окна ──
 	local TopBar = new("Frame", {
 		Parent = Content,
 		Size = UDim2.new(1, 0, 0, 62),
-		BackgroundTransparency = 1,
+		BackgroundTransparency = 0.42,
+		Theme = { BackgroundColor3 = "Sidebar" },
+	})
+	new("UIGradient", {
+		Parent = TopBar,
+		Transparency = NumberSequence.new({
+			NumberSequenceKeypoint.new(0, 0.08),
+			NumberSequenceKeypoint.new(0.62, 0.5),
+			NumberSequenceKeypoint.new(1, 0.78),
+		}),
+	})
+	new("Frame", {
+		Parent = TopBar,
+		AnchorPoint = Vector2.new(0, 0.5),
+		Position = UDim2.new(0, 18, 0.5, 0),
+		Size = UDim2.fromOffset(3, 26),
+		ZIndex = 3,
+		Theme = { BackgroundColor3 = "Accent" },
+	}, { corner(2), registerGradient(new("UIGradient", { Rotation = 90 }), "Accent", "Accent2") })
+	assetLayer(TopBar, "AccentGlow", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromOffset(20, 31),
+		Size = UDim2.fromOffset(50, 58),
+		ZIndex = 2,
+		ImageTransparency = 0.68,
+		Theme = { ImageColor3 = "Accent" },
 	})
 
 	local TabTitle = label({
 		Parent = TopBar,
-		Position = UDim2.fromOffset(24, 15),
-		Size = UDim2.new(1, -150, 0, 19),
+		Position = UDim2.fromOffset(30, 13),
+		Size = UDim2.new(1, -156, 0, 20),
 		Font = FONT_B,
 		TextSize = 16.5,
 		Text = "",
@@ -1388,8 +1908,8 @@ function Library:Window(opts)
 	})
 	local TabDesc = label({
 		Parent = TopBar,
-		Position = UDim2.fromOffset(24, 35),
-		Size = UDim2.new(1, -150, 0, 14),
+		Position = UDim2.fromOffset(30, 35),
+		Size = UDim2.new(1, -156, 0, 14),
 		Font = FONT,
 		TextSize = 12,
 		Text = "",
@@ -1427,11 +1947,14 @@ function Library:Window(opts)
 		box.AnchorPoint = Vector2.new(0.5, 0.5)
 		box.Position = UDim2.fromScale(0.5, 0.5)
 
-		local function paint(color)
+		local function paint(key)
+			local color = Theme[key]
 			for _, part in ipairs(box:GetDescendants()) do
 				if part:IsA("Frame") then
+					setThemeKey(part, "BackgroundColor3", key)
 					tween(part, EASE_FAST, { BackgroundColor3 = color })
 				elseif part:IsA("UIStroke") then
+					setThemeKey(part, "Color", key)
 					tween(part, EASE_FAST, { Color = color })
 				end
 			end
@@ -1439,11 +1962,11 @@ function Library:Window(opts)
 
 		b.MouseEnter:Connect(function()
 			tween(b, EASE_FAST, { BackgroundTransparency = 0 })
-			paint(Theme[hoverKey])
+			paint(hoverKey)
 		end)
 		b.MouseLeave:Connect(function()
 			tween(b, EASE_FAST, { BackgroundTransparency = 1 })
-			paint(Theme.Muted)
+			paint("Muted")
 		end)
 		return b, box
 	end
@@ -1475,7 +1998,7 @@ function Library:Window(opts)
 	icon(Grip, "grip", "Muted", 16, 21)
 
 	Grip.InputBegan:Connect(function(input)
-		if not isPressStart(input) then return end
+		if not isPressStart(input) or self.Minimized or self.Hidden then return end
 		local origin = input.Position
 		local startSize = Main.AbsoluteSize
 		activeDrag = function(i)
@@ -1484,6 +2007,7 @@ function Library:Window(opts)
 				math.max(self.MinSize.X, startSize.X + d.X),
 				math.max(self.MinSize.Y, startSize.Y + d.Y)
 			)
+			savedSize = Main.Size
 		end
 	end)
 
@@ -1492,7 +2016,21 @@ function Library:Window(opts)
 	draggable(Brand, Main, closePopup)
 
 	--═══ ПОВЕДЕНИЕ ОКНА ═══
-	local savedSize = size
+	local minimizeToken = 0
+	local visibilityToken = 0
+
+	local function applyChrome(minimized)
+		Sidebar.Visible = not minimized
+		Pages.Visible = not minimized
+		Grip.Visible = not minimized
+		if minimized then
+			Content.Position = UDim2.new()
+			Content.Size = UDim2.fromScale(1, 1)
+		else
+			Content.Position = UDim2.fromOffset(SIDEBAR_W, 0)
+			Content.Size = UDim2.new(1, -SIDEBAR_W, 1, 0)
+		end
+	end
 
 	-- иконка кнопки перерисовывается, а не подменяется символом
 	local function setMinIcon(name)
@@ -1501,47 +2039,75 @@ function Library:Window(opts)
 	end
 
 	function self:SetMinimized(state)
-		if self.Minimized == state then return end
+		if not Library.Alive or not Main.Parent then return false end
+		state = state and true or false
+		if self.Minimized == state then return true end
 		self.Minimized = state
+		minimizeToken += 1
+		local token = minimizeToken
 		closePopup()
+		if self._hideResults then self._hideResults() end
 		if state then
-			savedSize = UDim2.fromOffset(Main.AbsoluteSize.X, Main.AbsoluteSize.Y)
-			Sidebar.Visible = false
-			Pages.Visible = false
-			Grip.Visible = false
-			tween(Main, EASE, { Size = UDim2.fromOffset(340, 62) })
-			Content.Position = UDim2.new()
-			Content.Size = UDim2.fromScale(1, 1)
+			if not self.Hidden then
+				local absolute = Main.AbsoluteSize
+				if absolute.X > 0 and absolute.Y > 0 then
+					savedSize = UDim2.fromOffset(absolute.X, absolute.Y)
+				end
+				tween(Main, EASE, { Size = UDim2.fromOffset(340, 62) })
+			end
+			applyChrome(true)
 			setMinIcon("expand")
 		else
-			tween(Main, EASE, { Size = savedSize })
-			task.delay(0.22, function()
-				Sidebar.Visible = true
-				Pages.Visible = true
-				Grip.Visible = true
-				Content.Position = UDim2.fromOffset(SIDEBAR_W, 0)
-				Content.Size = UDim2.new(1, -SIDEBAR_W, 1, 0)
-			end)
+			if self.Hidden then
+				applyChrome(false)
+			else
+				tween(Main, EASE, { Size = savedSize })
+				task.delay(0.22, function()
+					if token == minimizeToken and not self.Minimized and not self.Hidden and Main.Parent then
+						applyChrome(false)
+					end
+				end)
+			end
 			setMinIcon("minimize")
 		end
+		return true
 	end
 
 	function self:SetVisible(state)
+		if not Library.Alive or not Main.Parent then return false end
+		state = state and true or false
+		if state == (not self.Hidden) then return true end
 		self.Hidden = not state
+		visibilityToken += 1
+		local token = visibilityToken
 		closePopup()
+		if self._hideResults then self._hideResults() end
 		if state then
 			Main.Visible = true
-			tween(Main, EASE, { Size = savedSize })
-			if self.Acrylic then setBlur(14) end
+			applyChrome(self.Minimized)
+			local targetSize = self.Minimized and UDim2.fromOffset(340, 62) or savedSize
+			tween(Main, EASE, { Size = targetSize })
 		else
-			if self.Acrylic then setBlur(0) end
-			tween(Main, EASE_FAST, { Size = UDim2.fromOffset(savedSize.X.Offset, 0) })
-			task.delay(0.14, function() Main.Visible = false end)
+			if not self.Minimized then
+				local absolute = Main.AbsoluteSize
+				if absolute.X > 0 and absolute.Y > 0 then
+					savedSize = UDim2.fromOffset(absolute.X, absolute.Y)
+				end
+			end
+			local width = Main.Size.X
+			tween(Main, EASE_FAST, { Size = UDim2.new(width.Scale, width.Offset, 0, 0) })
+			task.delay(0.14, function()
+				if token == visibilityToken and self.Hidden and Main.Parent then
+					Main.Visible = false
+				end
+			end)
 		end
 		if self.FloatButton then self.FloatButton.Visible = not state end
+		refreshBlur()
+		return true
 	end
 
-	function self:Toggle() self:SetVisible(self.Hidden) end
+	function self:Toggle() return self:SetVisible(self.Hidden) end
 
 	function self:Notify(o) return Library:Notify(o) end
 
@@ -1559,8 +2125,18 @@ function Library:Window(opts)
 
 	-- клавиша показать/скрыть
 	onInput("Began", function(input, processed)
-		if processed or self.Hidden == nil then return end
-		if input.KeyCode == self.ToggleKey then self:Toggle() end
+		if self.Hidden == nil then return end
+		local ctrlK = input.KeyCode == Enum.KeyCode.K
+			and (UserInput:IsKeyDown(Enum.KeyCode.LeftControl)
+				or UserInput:IsKeyDown(Enum.KeyCode.RightControl))
+		if ctrlK then
+			self:SetVisible(true)
+			task.defer(function()
+				if SearchInput.Parent then SearchInput:CaptureFocus() end
+			end)
+			return
+		end
+		if not processed and input.KeyCode == self.ToggleKey then self:Toggle() end
 	end)
 
 	--── плавающая кнопка для телефонов ──
@@ -1574,20 +2150,45 @@ function Library:Window(opts)
 			BorderSizePixel = 0,
 			Font = FONT_B,
 			TextSize = 16,
-			Text = "◈",
+			Text = "",
 			Visible = false,
 			ZIndex = 800,
 			Theme = { BackgroundColor3 = "Card", TextColor3 = "Accent" },
 		}, { corner(23), stroke("Accent", 1, 0.4) })
-		float.MouseButton1Click:Connect(function() self:SetVisible(true) end)
-		draggable(float, float)
+		new("Frame", {
+			Parent = float,
+			AnchorPoint = Vector2.new(0.5, 0.5),
+			Position = UDim2.fromScale(0.5, 0.5),
+			Size = UDim2.fromOffset(14, 14),
+			Rotation = 45,
+			ZIndex = 801,
+			Theme = { BackgroundColor3 = "Accent" },
+		}, { corner(3) })
+
+		local floatDragged = false
+		float.InputBegan:Connect(function(input)
+			if not isPressStart(input) then return end
+			floatDragged = false
+			local origin = input.Position
+			local startAbs = float.AbsolutePosition
+			activeDrag = function(i)
+				local delta = i.Position - origin
+				if delta.Magnitude > 5 then floatDragged = true end
+				local vp = viewport()
+				local x = math.clamp(startAbs.X + delta.X, 0, math.max(0, vp.X - 46))
+				local y = math.clamp(startAbs.Y + delta.Y, 0, math.max(0, vp.Y - 46))
+				float.Position = UDim2.fromOffset(x, y + 23)
+			end
+		end)
+		float.MouseButton1Click:Connect(function()
+			if not floatDragged then self:SetVisible(true) end
+		end)
 		self.FloatButton = float
 	end
 
 	--── появление окна ──
-	Main.Size = UDim2.fromOffset(size.X.Offset, 0)
+	Main.Size = UDim2.new(size.X.Scale, size.X.Offset, 0, 0)
 	tween(Main, EASE_SLOW, { Size = size })
-	if self.Acrylic then setBlur(14) end
 
 	--═══ ПОИСК / КОМАНДНАЯ ПАЛИТРА ═══
 	local Results = new("Frame", {
@@ -1598,6 +2199,7 @@ function Library:Window(opts)
 		ClipsDescendants = true,
 		Theme = { BackgroundColor3 = "Card" },
 	}, { corner(10), stroke("Stroke", 1, 0.2) })
+	topSheen(Results, 604, 10, 0.86)
 
 	local ResultList = new("ScrollingFrame", {
 		Parent = Results,
@@ -1614,6 +2216,7 @@ function Library:Window(opts)
 		Results.Visible = false
 		tween(Results, EASE_FAST, { Size = UDim2.fromOffset(280, 0) })
 	end
+	self._hideResults = hideResults
 
 	local function runSearch(query)
 		for _, c in ipairs(ResultList:GetChildren()) do
@@ -1621,6 +2224,14 @@ function Library:Window(opts)
 		end
 		query = (query or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
 		if #query < 2 then hideResults() return end
+
+		for i = #Library.SearchIndex, 1, -1 do
+			local entry = Library.SearchIndex[i]
+			if not entry.card or not entry.card.Parent
+				or not entry.tab or not entry.tab.Page or not entry.tab.Page.Parent then
+				table.remove(Library.SearchIndex, i)
+			end
+		end
 
 		local found = 0
 		for _, entry in ipairs(Library.SearchIndex) do
@@ -1637,6 +2248,7 @@ function Library:Window(opts)
 					Text = "",
 					LayoutOrder = found,
 					ZIndex = 602,
+					Theme = { BackgroundColor3 = "CardHover" },
 				}, { corner(8) })
 
 				label({
@@ -1654,7 +2266,7 @@ function Library:Window(opts)
 					Size = UDim2.new(1, -20, 0, 13),
 					Font = FONT,
 					TextSize = 11,
-					Text = entry.tab.Name .. "  ·  " .. entry.kind,
+					Text = entry.tab.Name .. "  /  " .. entry.kind,
 					ZIndex = 603,
 					Theme = { TextColor3 = "Muted" },
 				})
@@ -1689,14 +2301,12 @@ function Library:Window(opts)
 	end)
 	SearchInput.FocusLost:Connect(function()
 		task.delay(0.15, function()
-			if SearchInput.Text == "" then hideResults() end
+			if SearchInput.Parent and not SearchInput:IsFocused() then hideResults() end
 		end)
 	end)
 
 	table.insert(Library.Windows, self)
-	table.insert(Library._unloadFns, function()
-		if self.Acrylic then setBlur(0) end
-	end)
+	refreshBlur()
 
 	return self
 end
@@ -1708,28 +2318,51 @@ end
 local Tab = {}
 Tab.__index = Tab
 
+local function tabAlive(tab)
+	return Library.Alive and tab and tab.Page and tab.Page.Parent ~= nil
+end
+
 function Window:SelectTab(tab)
-	if self.ActiveTab == tab then return end
+	if not Library.Alive then return false end
+	if type(tab) ~= "table" or tab.Window ~= self or not tab.Page or not tab.Page.Parent then
+		return false
+	end
+	if self.ActiveTab == tab then return true end
 	closePopup()
 
 	for _, t in ipairs(self.Tabs) do
 		local active = (t == tab)
 		t.Page.Visible = active
-		t._btn.BackgroundColor3 = Theme.Card
-		tween(t._btn, EASE_FAST, { BackgroundTransparency = active and 0 or 1 })
+		setThemeKey(t._btn, "BackgroundColor3", active and "CardHover" or "Card")
+		tween(t._btn, EASE_FAST, {
+			BackgroundTransparency = active and 0.18 or 1,
+			BackgroundColor3 = active and Theme.CardHover or Theme.Card,
+		})
+		if t._btnStroke then
+			tween(t._btnStroke, EASE_FAST, { Transparency = active and 0.68 or 1 })
+		end
+		setThemeKey(t._label, "TextColor3", active and "Text" or "SubText")
 		tween(t._label, EASE_FAST, { TextColor3 = active and Theme.Text or Theme.SubText })
 
 		-- чип активной вкладки заливается акцентным градиентом
 		t._chipGrad.Enabled = active
+		setThemeKey(t._chip, "BackgroundColor3", active and "Accent" or "Inset")
 		tween(t._chip, EASE_FAST, {
 			BackgroundColor3 = active and Theme.Accent or Theme.Inset,
 		})
+		if t._chipGlow then
+			tween(t._chipGlow, EASE_FAST, {
+				ImageTransparency = active and 0.52 or 1,
+			})
+		end
+		setThemeKey(t._chipText, "TextColor3", active and "Text" or "Muted")
 		tween(t._chipText, EASE_FAST, {
-			TextColor3 = active and Color3.new(1, 1, 1) or Theme.Muted,
+			TextColor3 = active and Theme.Text or Theme.Muted,
 		})
 		if t._chipImage then
+			setThemeKey(t._chipImage, "ImageColor3", active and "Text" or "Muted")
 			tween(t._chipImage, EASE_FAST, {
-				ImageColor3 = active and Color3.new(1, 1, 1) or Theme.Muted,
+				ImageColor3 = active and Theme.Text or Theme.Muted,
 			})
 		end
 
@@ -1747,15 +2380,16 @@ function Window:SelectTab(tab)
 	-- позицией детей управляет UIListLayout, и анимировать их бесполезно.
 	tab.Page.Position = UDim2.fromOffset(0, 12)
 	tween(tab.Page, EASE, { Position = UDim2.fromOffset(0, 0) })
+	return true
 end
 
 function Window:Tab(opts)
-	opts = opts or {}
+	if not Library.Alive or not self.Pages or not self.Pages.Parent then return nil end
+	opts = type(opts) == "table" and opts or {}
 	local tab = setmetatable({}, Tab)
-	tab.Name   = opts.Name or opts.Text or "Вкладка"
-	tab.Desc   = opts.Desc
+	tab.Name   = asText(opts.Name ~= nil and opts.Name or opts.Text, "Вкладка")
+	tab.Desc   = opts.Desc ~= nil and tostring(opts.Desc) or nil
 	tab.Window = self
-	tab.Items  = {}
 	tab._order = 0
 	tab._section = nil
 
@@ -1770,11 +2404,14 @@ function Window:Tab(opts)
 		LayoutOrder = #self.Tabs + 1,
 		Theme = { BackgroundColor3 = "Card" },
 	}, { corner(9) })
+	local btnStroke = stroke("Accent", 1, 1)
+	btnStroke.Parent = btn
+	topSheen(btn, 3, 8, 0.94)
 
 	local marker = new("Frame", {
 		Parent = btn,
-		AnchorPoint = Vector2.new(0, 0.5),
-		Position = UDim2.new(0, -10, 0.5, 0),
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, -2, 0.5, 0),
 		Size = UDim2.new(0, 3, 0, 0),
 		BackgroundTransparency = 1,
 		BorderSizePixel = 0,
@@ -1785,6 +2422,15 @@ function Window:Tab(opts)
 	-- Вместо юникод-глифа — «чип»: скруглённый квадрат с первой буквой.
 	-- Всегда рендерится, выглядит намеренно и подсвечивается акцентом
 	-- на активной вкладке.
+	local chipGlow = assetLayer(btn, "AccentGlow", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.new(0, 20, 0.5, 0),
+		Size = UDim2.fromOffset(48, 40),
+		ZIndex = 1,
+		ImageTransparency = 1,
+		Theme = { ImageColor3 = "Accent" },
+	})
+
 	local chip = new("Frame", {
 		Parent = btn,
 		AnchorPoint = Vector2.new(0, 0.5),
@@ -1794,6 +2440,7 @@ function Window:Tab(opts)
 		ZIndex = 2,
 		Theme = { BackgroundColor3 = "Inset" },
 	}, { corner(7) })
+	topSheen(chip, 4, 4, 0.86)
 
 	local chipGrad = registerGradient(
 		new("UIGradient", { Rotation = 55, Parent = chip, Enabled = false }),
@@ -1829,7 +2476,7 @@ function Window:Tab(opts)
 			local ok, ch = pcall(function()
 				return utf8.char(utf8.codepoint(tab.Name, 1))
 			end)
-			return (ok and ch or "•"):upper()
+			return (ok and ch or "A"):upper()
 		end)(),
 		TextXAlignment = Enum.TextXAlignment.Center,
 		ZIndex = 3,
@@ -1851,12 +2498,14 @@ function Window:Tab(opts)
 	btn.MouseEnter:Connect(function()
 		if self.ActiveTab ~= tab then
 			tween(btn, EASE_FAST, { BackgroundTransparency = 0.4 })
+			setThemeKey(nameLbl, "TextColor3", "Text")
 			tween(nameLbl, EASE_FAST, { TextColor3 = Theme.Text })
 		end
 	end)
 	btn.MouseLeave:Connect(function()
 		if self.ActiveTab ~= tab then
 			tween(btn, EASE_FAST, { BackgroundTransparency = 1 })
+			setThemeKey(nameLbl, "TextColor3", "SubText")
 			tween(nameLbl, EASE_FAST, { TextColor3 = Theme.SubText })
 		end
 	end)
@@ -1866,9 +2515,11 @@ function Window:Tab(opts)
 	-- Без него поле tab.Button перекрывало бы метод Tab:Button через
 	-- __index, и вызов Tab:Button{...} падал бы на попытке вызвать Instance.
 	tab._btn       = btn
+	tab._btnStroke = btnStroke
 	tab._label     = nameLbl
 	tab._marker    = marker
 	tab._chip      = chip
+	tab._chipGlow  = chipGlow
 	tab._chipText  = chipText
 	tab._chipGrad  = chipGrad
 	tab._chipImage = chipImage
@@ -1886,7 +2537,7 @@ function Window:Tab(opts)
 		AutomaticCanvasSize = Enum.AutomaticSize.Y,
 		Visible = false,
 		Theme = { ScrollBarImageColor3 = "Muted" },
-	}, { padding(18, 24, 24, 20), list(8) })
+	}, { padding(20, 26, 24, 24), list(10) })
 
 	table.insert(self.Tabs, tab)
 	if not self.ActiveTab then self:SelectTab(tab) end
@@ -1895,9 +2546,25 @@ end
 
 --── регистрация элемента в поиске ──
 local function index(tab, name, kind, card)
-	table.insert(Library.SearchIndex, {
-		window = tab.Window, tab = tab, name = name, kind = kind, card = card,
-	})
+	local entry = {
+		window = tab.Window,
+		tab = tab,
+		name = asText(name, "Элемент"),
+		kind = asText(kind, "элемент"),
+		card = card,
+	}
+	table.insert(Library.SearchIndex, entry)
+	pcall(function()
+		card.Destroying:Connect(function()
+			for i = #Library.SearchIndex, 1, -1 do
+				if Library.SearchIndex[i] == entry then
+					table.remove(Library.SearchIndex, i)
+					break
+				end
+			end
+		end)
+	end)
+	return entry
 end
 
 local function nextOrder(tab)
@@ -1912,19 +2579,26 @@ end
 --────────────────────────── Заголовок секции ──────────────────────────
 -- Открывает новую группу: последующие элементы лягут внутрь неё строками.
 function Tab:Section(opts)
-	opts = opts or {}
+	if not tabAlive(self) then return nil end
+	opts = type(opts) == "table" and opts or {}
 	local section = openSection(self, opts.Text or opts.Name)
 	return {
 		Set = function(_, text)
-			if section.header then section.header.Text = text end
+			if not section.holder.Parent then return false end
+			if section.header then section.header.Text = asText(text, "") end
+			return true
 		end,
-		Destroy = function() section.holder:Destroy() end,
+		Destroy = function()
+			if self._section == section then self._section = nil end
+			if section.holder.Parent then section.holder:Destroy() end
+		end,
 	}
 end
 
 --──────────────────────────── Разделитель ────────────────────────────
 -- Закрывает текущую группу: следующий элемент начнёт новую карточку.
 function Tab:Divider()
+	if not tabAlive(self) then return nil end
 	self._section = nil
 	local spacer = new("Frame", {
 		Parent = self.Page,
@@ -1932,12 +2606,13 @@ function Tab:Divider()
 		BackgroundTransparency = 1,
 		LayoutOrder = nextOrder(self),
 	})
-	return { Destroy = function() spacer:Destroy() end }
+	return { Destroy = function() if spacer.Parent then spacer:Destroy() end end }
 end
 
 --────────────────────────────── Текст ──────────────────────────────
 function Tab:Paragraph(opts)
-	opts = opts or {}
+	if not tabAlive(self) then return nil end
+	opts = type(opts) == "table" and opts or {}
 	local section = self._section or openSection(self, nil)
 
 	local row = new("Frame", {
@@ -1966,7 +2641,7 @@ function Tab:Paragraph(opts)
 		Size = UDim2.new(1, 0, 0, 16),
 		Font = FONT_M,
 		TextSize = 13,
-		Text = opts.Text or opts.Title or "Заметка",
+		Text = asText(opts.Text ~= nil and opts.Text or opts.Title, "Заметка"),
 		LayoutOrder = 1,
 	})
 	local body = label({
@@ -1975,7 +2650,7 @@ function Tab:Paragraph(opts)
 		AutomaticSize = Enum.AutomaticSize.Y,
 		Font = FONT,
 		TextSize = 12,
-		Text = opts.Content or opts.Desc or "",
+		Text = asText(opts.Content ~= nil and opts.Content or opts.Desc, ""),
 		TextWrapped = true,
 		TextYAlignment = Enum.TextYAlignment.Top,
 		LayoutOrder = 2,
@@ -1985,46 +2660,65 @@ function Tab:Paragraph(opts)
 	index(self, title.Text, "текст", row)
 	return {
 		Set = function(_, t, c)
-			if t then title.Text = t end
-			if c then body.Text = c end
+			if not row.Parent then return false end
+			if t ~= nil then title.Text = tostring(t) end
+			if c ~= nil then body.Text = tostring(c) end
+			return true
 		end,
-		Destroy = function() row:Destroy() end,
+		Destroy = function() if row.Parent then row:Destroy() end end,
 	}
 end
 
 --────────────────────────────── Кнопка ──────────────────────────────
 function Tab:Button(opts)
-	opts = opts or {}
-	local card, slot = makeCard(self, opts)
-	slot.Size = UDim2.fromOffset(110, 30)
+	if not tabAlive(self) then return nil end
+	opts = type(opts) == "table" and opts or {}
+	local controlWidth = math.max(72, finiteNumber(opts.SlotWidth, 110))
+	local card, slot = makeCard(self, opts, controlWidth)
+	slot.Size = UDim2.fromOffset(controlWidth, 30)
+	local buttonGlow = assetLayer(slot, "AccentGlow", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 8, 0.5, 0),
+		Size = UDim2.new(1, 24, 0, 46),
+		ZIndex = 0,
+		ImageTransparency = 1,
+		Theme = { ImageColor3 = "Accent" },
+	})
 
 	local btn = new("TextButton", {
 		Parent = slot,
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, 0, 0.5, 0),
-		Size = UDim2.fromOffset(110, 30),
+		Size = UDim2.fromOffset(controlWidth, 30),
 		AutoButtonColor = false,
 		BorderSizePixel = 0,
 		Font = FONT_SB,
 		TextSize = 12.5,
-		Text = opts.ButtonText or "Выполнить",
+		Text = asText(opts.ButtonText, "Выполнить"),
 		Theme = { BackgroundColor3 = "CardHover", TextColor3 = "Text" },
 	}, { corner(8), stroke("StrokeSoft", 1, 0) })
+	topSheen(btn, 2, 7, 0.88)
 
 	btn.MouseEnter:Connect(function()
-		tween(btn, EASE_FAST, { BackgroundColor3 = Theme.Accent, TextColor3 = Color3.new(1, 1, 1) })
+		setThemeKey(btn, "BackgroundColor3", "Accent")
+		setThemeKey(btn, "TextColor3", "Text")
+		tween(btn, EASE_FAST, { BackgroundColor3 = Theme.Accent, TextColor3 = Theme.Text })
+		if buttonGlow then tween(buttonGlow, EASE_FAST, { ImageTransparency = 0.58 }) end
 	end)
 	btn.MouseLeave:Connect(function()
+		setThemeKey(btn, "BackgroundColor3", "CardHover")
+		setThemeKey(btn, "TextColor3", "Text")
 		tween(btn, EASE_FAST, { BackgroundColor3 = Theme.CardHover, TextColor3 = Theme.Text })
+		if buttonGlow then tween(buttonGlow, EASE_FAST, { ImageTransparency = 1 }) end
 	end)
 	btn.MouseButton1Click:Connect(function()
-		tween(btn, TweenInfo.new(0.08), { Size = UDim2.fromOffset(104, 28) })
+		tween(btn, TweenInfo.new(0.08), { Size = UDim2.fromOffset(math.max(68, controlWidth - 6), 28) })
 		task.delay(0.09, function()
-			tween(btn, EASE_FAST, { Size = UDim2.fromOffset(110, 30) })
+			if btn.Parent then tween(btn, EASE_FAST, { Size = UDim2.fromOffset(controlWidth, 30) }) end
 		end)
 		if opts.Confirm then
 			Library:Dialog{
-				Title = opts.Text or "Подтверждение",
+				Title = asText(opts.Text, "Подтверждение"),
 				Content = opts.Confirm == true and "Выполнить это действие?" or tostring(opts.Confirm),
 				Buttons = {
 					{ Text = "Да", Primary = true, Callback = opts.Callback },
@@ -2036,27 +2730,43 @@ function Tab:Button(opts)
 		end
 	end)
 
-	index(self, opts.Text or "Кнопка", "кнопка", card)
-	return { Destroy = function() card:Destroy() end, Card = card }
+	index(self, asText(opts.Text, "Кнопка"), "кнопка", card)
+	return {
+		Destroy = function() if card.Parent then card:Destroy() end end,
+		Card = card,
+	}
 end
 
 --────────────────────────────── Тоггл ──────────────────────────────
 function Tab:Toggle(opts)
-	opts = opts or {}
-	local card, slot = makeCard(self, opts)
+	if not tabAlive(self) then return nil end
+	opts = type(opts) == "table" and opts or {}
+	local flag = optionFlag(opts)
+	local card, slot = makeCard(self, opts, 60)
 	local state = opts.Default == true
 
 	-- Именно Frame, а не TextButton: кликом ловим всю строку целиком
 	-- через card.InputBegan. Будь тут кнопка, клик по переключателю
 	-- сработал бы дважды — и на кнопке, и всплытием на карточке.
+	local bloom = assetLayer(slot, "AccentGlow", {
+		AnchorPoint = Vector2.new(1, 0.5),
+		Position = UDim2.new(1, 8, 0.5, 0),
+		Size = UDim2.fromOffset(64, 44),
+		ZIndex = 1,
+		ImageTransparency = 1,
+		Theme = { ImageColor3 = "Accent" },
+	})
+
 	local track_ = new("Frame", {
 		Parent = slot,
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, 0, 0.5, 0),
 		Size = UDim2.fromOffset(46, 26),
 		BorderSizePixel = 0,
+		ZIndex = 2,
 		Theme = { BackgroundColor3 = "Inset" },
 	}, { corner(13), stroke("StrokeSoft", 1, 0) })
+	innerShadow(track_, 2, 0.38)
 
 	-- лёгкое свечение вокруг включённого переключателя
 	local glow = new("UIStroke", {
@@ -2071,54 +2781,71 @@ function Tab:Toggle(opts)
 		Position = UDim2.fromOffset(3, 3),
 		Size = UDim2.fromOffset(20, 20),
 		BorderSizePixel = 0,
-		ZIndex = 2,
+		ZIndex = 3,
 		Theme = { BackgroundColor3 = "Muted" },
 	}, { corner(10) })
+	topSheen(knob, 4, 4, 0.76)
 
 	local obj = {}
+	local cleanup
 
 	function obj:Set(value, silent)
+		if not card.Parent then return false end
 		state = value and true or false
+		setThemeKey(track_, "BackgroundColor3", state and "Accent" or "Inset")
+		setThemeKey(knob, "BackgroundColor3", state and "Text" or "Muted")
 		tween(track_, EASE, { BackgroundColor3 = state and Theme.Accent or Theme.Inset })
 		tween(glow, EASE, { Transparency = state and 0.75 or 1 })
+		if bloom then tween(bloom, EASE, { ImageTransparency = state and 0.54 or 1 }) end
 		tween(knob, TweenInfo.new(0.24, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
 			Position = state and UDim2.fromOffset(23, 3) or UDim2.fromOffset(3, 3),
-			BackgroundColor3 = state and Color3.new(1, 1, 1) or Theme.Muted,
+			BackgroundColor3 = state and Theme.Text or Theme.Muted,
 		})
-		if opts.Flag then Library.Flags[opts.Flag] = state end
+		if flag then Library.Flags[flag] = state end
 		if not silent then safeCall(opts.Callback, state) end
+		return true
 	end
 
 	function obj:Get() return state end
-	function obj:Destroy() card:Destroy() end
+	function obj:Destroy()
+		cleanup()
+		if card.Parent then card:Destroy() end
+	end
 	obj.Card = card
+	cleanup = bindCleanup(card, function()
+		unregisterOption(flag, obj)
+	end)
 
 	card.InputBegan:Connect(function(input)
 		if isPressStart(input) then obj:Set(not state) end
 	end)
 
 	obj:Set(state, true)
-	if opts.Flag then Library.Options[opts.Flag] = obj end
-	index(self, opts.Text or "Тоггл", "переключатель", card)
+	registerOption(flag, obj, state)
+	index(self, asText(opts.Text, "Тоггл"), "переключатель", card)
 	return obj
 end
 
 --────────────────────────────── Слайдер ──────────────────────────────
 function Tab:Slider(opts)
-	opts = opts or {}
-	opts.Height = opts.Desc and 66 or 52
-	local card, slot, titleLbl = makeCard(self, opts)
+	if not tabAlive(self) then return nil end
+	opts = type(opts) == "table" and opts or {}
+	local flag = optionFlag(opts)
+	local hasDesc = opts.Desc ~= nil and tostring(opts.Desc) ~= ""
+	local sliderHeight = finiteNumber(opts.Height, hasDesc and 66 or 52)
+	local card, slot, titleLbl = makeCard(self, opts, 0, sliderHeight)
 	slot.Visible = false
 	-- у слайдера низ строки занимает полоса, поэтому заголовок
 	-- прижимаем к верху, а не центрируем по всей высоте
 	titleLbl.Position = UDim2.fromOffset(16, 9)
 	titleLbl.Size = UDim2.new(1, -120, 0, 16)
 
-	local minV     = opts.Min or 0
-	local maxV     = opts.Max or 100
-	local decimals = opts.Decimals or 0
-	local suffix   = opts.Suffix or ""
-	local value    = math.clamp(opts.Default or minV, minV, maxV)
+	local minV = finiteNumber(opts.Min, 0)
+	local maxV = finiteNumber(opts.Max, 100)
+	if minV > maxV then minV, maxV = maxV, minV end
+	local decimals = math.clamp(math.floor(finiteNumber(opts.Decimals, 0) + 0.5), 0, 6)
+	local suffix = asText(opts.Suffix, "")
+	local value = math.clamp(finiteNumber(opts.Default, minV), minV, maxV)
 
 	local valueLbl = label({
 		Parent = card,
@@ -2140,6 +2867,8 @@ function Tab:Slider(opts)
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Inset" },
 	}, { corner(3) })
+	innerShadow(bar, 1, 0.35)
+	topSheen(bar, 2, 6, 0.91)
 
 	local fill = new("Frame", {
 		Parent = bar,
@@ -2149,6 +2878,15 @@ function Tab:Slider(opts)
 	}, {
 		corner(3),
 		registerGradient(new("UIGradient", {}), "Accent", "Accent2"),
+	})
+
+	local knobGlow = assetLayer(bar, "AccentGlow", {
+		AnchorPoint = Vector2.new(0.5, 0.5),
+		Position = UDim2.fromScale(0, 0.5),
+		Size = UDim2.fromOffset(42, 30),
+		ZIndex = 2,
+		ImageTransparency = 0.6,
+		Theme = { ImageColor3 = "Accent" },
 	})
 
 	local knob = new("Frame", {
@@ -2162,20 +2900,35 @@ function Tab:Slider(opts)
 	}, { corner(7), stroke("Backdrop", 2, 0.55) })
 
 	local obj = {}
+	local dragFn
+	local stopEnded
+	local cleanup
 
 	function obj:Set(v, silent)
-		value = math.clamp(round(v, decimals), minV, maxV)
+		if not card.Parent then return false end
+		local number = finiteNumber(v, value)
+		value = math.clamp(round(number, decimals), minV, maxV)
 		local alpha = (maxV - minV) == 0 and 0 or (value - minV) / (maxV - minV)
 		fill.Size = UDim2.fromScale(alpha, 1)
 		knob.Position = UDim2.fromScale(alpha, 0.5)
+		if knobGlow then knobGlow.Position = UDim2.fromScale(alpha, 0.5) end
 		valueLbl.Text = tostring(value) .. suffix
-		if opts.Flag then Library.Flags[opts.Flag] = value end
+		if flag then Library.Flags[flag] = value end
 		if not silent then safeCall(opts.Callback, value) end
+		return true
 	end
 
 	function obj:Get() return value end
-	function obj:Destroy() card:Destroy() end
+	function obj:Destroy()
+		cleanup()
+		if card.Parent then card:Destroy() end
+	end
 	obj.Card = card
+	cleanup = bindCleanup(card, function()
+		if activeDrag == dragFn then activeDrag = nil end
+		if stopEnded then stopEnded() stopEnded = nil end
+		unregisterOption(flag, obj)
+	end)
 
 	local function fromX(px)
 		local alpha = clamp01((px - bar.AbsolutePosition.X) / math.max(1, bar.AbsoluteSize.X))
@@ -2186,40 +2939,49 @@ function Tab:Slider(opts)
 		if not isPressStart(input) then return end
 		tween(knob, EASE_FAST, { Size = UDim2.fromOffset(18, 18) })
 		fromX(input.Position.X)
-		activeDrag = function(i) fromX(i.Position.X) end
+		dragFn = function(i) fromX(i.Position.X) end
+		activeDrag = dragFn
 	end)
-	onInput("Ended", function(input)
+	stopEnded = onInput("Ended", function(input)
 		if isPressStart(input) then
 			tween(knob, EASE_FAST, { Size = UDim2.fromOffset(14, 14) })
 		end
 	end)
 
 	obj:Set(value, true)
-	if opts.Flag then Library.Options[opts.Flag] = obj end
-	index(self, opts.Text or "Слайдер", "слайдер", card)
+	registerOption(flag, obj, value)
+	index(self, asText(opts.Text, "Слайдер"), "слайдер", card)
 	return obj
 end
 
 --──────────────────────────── Выпадающий список ────────────────────────────
 function Tab:Dropdown(opts)
-	opts = opts or {}
-	local card, slot = makeCard(self, opts)
-	slot.Size = UDim2.fromOffset(160, 30)
+	if not tabAlive(self) then return nil end
+	opts = type(opts) == "table" and opts or {}
+	local flag = optionFlag(opts)
+	local controlWidth = math.max(100, finiteNumber(opts.SlotWidth, 160))
+	local card, slot = makeCard(self, opts, controlWidth)
+	slot.Size = UDim2.fromOffset(controlWidth, 30)
 
-	local options  = opts.Options or opts.Values or {}
+	local suppliedOptions = opts.Options ~= nil and opts.Options or opts.Values
+	local options  = type(suppliedOptions) == "table" and suppliedOptions or {}
 	local multi    = opts.Multi == true
 	local selected = multi and {} or nil
+	local placeholder = asText(opts.Placeholder, "Не выбрано")
 
 	local button = new("TextButton", {
 		Parent = slot,
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, 0, 0.5, 0),
-		Size = UDim2.fromOffset(160, 30),
+		Size = UDim2.fromOffset(controlWidth, 30),
 		AutoButtonColor = false,
 		BorderSizePixel = 0,
 		Text = "",
 		Theme = { BackgroundColor3 = "Inset" },
 	}, { corner(8), stroke("StrokeSoft", 1, 0) })
+	innerShadow(button, 1, 0.4)
+	topSheen(button, 2, 7, 0.92)
+	local dropdownEdge = button:FindFirstChildOfClass("UIStroke")
 
 	local display = label({
 		Parent = button,
@@ -2227,7 +2989,7 @@ function Tab:Dropdown(opts)
 		Size = UDim2.new(1, -30, 1, 0),
 		Font = FONT,
 		TextSize = 12,
-		Text = opts.Placeholder or "Не выбрано",
+		Text = placeholder,
 		TextTruncate = Enum.TextTruncate.AtEnd,
 		Theme = { TextColor3 = "SubText" },
 	})
@@ -2239,13 +3001,16 @@ function Tab:Dropdown(opts)
 	--── меню в слое оверлея ──
 	local menu = new("Frame", {
 		Parent = Overlay,
-		Size = UDim2.fromOffset(160, 0),
+		Size = UDim2.fromOffset(controlWidth, 0),
 		Visible = false,
 		BorderSizePixel = 0,
 		ClipsDescendants = true,
 		ZIndex = 610,
 		Theme = { BackgroundColor3 = "Card" },
 	}, { corner(9), stroke("Stroke", 1, 0.2) })
+	surfaceNoise(menu, 610, 0.94)
+	topSheen(menu, 614, 9, 0.86)
+	local menuShadow = floatingShadow(Overlay, 609, 0.34)
 
 	local search
 	local scroll = new("ScrollingFrame", {
@@ -2268,11 +3033,12 @@ function Tab:Dropdown(opts)
 			Font = FONT,
 			TextSize = 12,
 			Text = "",
-			PlaceholderText = "Фильтр…",
+			PlaceholderText = "Фильтр...",
 			ClearTextOnFocus = false,
 			ZIndex = 613,
 			Theme = { BackgroundColor3 = "Inset", TextColor3 = "Text", PlaceholderColor3 = "Muted" },
 		}, { corner(7), padding(0, 0, 8, 8) })
+		innerShadow(search, 613, 0.42)
 		scroll.Position = UDim2.fromOffset(0, 32)
 		scroll.Size = UDim2.new(1, 0, 1, -32)
 	end
@@ -2280,6 +3046,8 @@ function Tab:Dropdown(opts)
 	local obj = {}
 	local isOpen = false
 	local rows = {}
+	local popupToken = 0
+	local cleanup
 
 	local function isSelected(v)
 		if multi then
@@ -2292,17 +3060,23 @@ function Tab:Dropdown(opts)
 	local function refreshDisplay()
 		if multi then
 			if #selected == 0 then
-				display.Text = opts.Placeholder or "Не выбрано"
+				display.Text = placeholder
+				setThemeKey(display, "TextColor3", "SubText")
 				display.TextColor3 = Theme.SubText
 			elseif #selected <= 2 then
-				display.Text = table.concat(selected, ", ")
+				local parts = {}
+				for i, item in ipairs(selected) do parts[i] = tostring(item) end
+				display.Text = table.concat(parts, ", ")
+				setThemeKey(display, "TextColor3", "Text")
 				display.TextColor3 = Theme.Text
 			else
 				display.Text = "Выбрано: " .. #selected
+				setThemeKey(display, "TextColor3", "Text")
 				display.TextColor3 = Theme.Text
 			end
 		else
-			display.Text = selected ~= nil and tostring(selected) or (opts.Placeholder or "Не выбрано")
+			display.Text = selected ~= nil and tostring(selected) or placeholder
+			setThemeKey(display, "TextColor3", selected ~= nil and "Text" or "SubText")
 			display.TextColor3 = selected ~= nil and Theme.Text or Theme.SubText
 		end
 	end
@@ -2316,30 +3090,48 @@ function Tab:Dropdown(opts)
 	local function place()
 		local vp = viewport()
 		local h = rowHeight()
-		local x = button.AbsolutePosition.X
+		local width = math.max(1, button.AbsoluteSize.X)
+		local x = math.clamp(button.AbsolutePosition.X, 10, math.max(10, vp.X - width - 10))
 		local y = button.AbsolutePosition.Y + button.AbsoluteSize.Y + 4
 		if y + h > vp.Y - 10 then
 			y = button.AbsolutePosition.Y - h - 4
 		end
+		y = math.clamp(y, 10, math.max(10, vp.Y - h - 10))
 		menu.Position = UDim2.fromOffset(x, y)
+		if menuShadow then
+			menuShadow.Position = UDim2.fromOffset(x - 18, y - 18)
+			menuShadow.Size = UDim2.fromOffset(width + 36, h + 36)
+		end
 	end
 
 	local stopFollow
 	local function close()
 		if not isOpen then return end
 		isOpen = false
+		popupToken += 1
+		local token = popupToken
 		if openPopup == close then openPopup = nil end
 		if stopFollow then stopFollow() stopFollow = nil end
+		setThemeKey(dropdownEdge, "Color", "StrokeSoft")
+		tween(dropdownEdge, EASE_FAST, { Color = Theme.StrokeSoft, Transparency = 0 })
 		tween(arrow, EASE_FAST, { Rotation = 0 })
 		tween(menu, EASE_FAST, { Size = UDim2.fromOffset(button.AbsoluteSize.X, 0) })
-		task.delay(0.13, function() menu.Visible = false end)
+		task.delay(0.13, function()
+			if token ~= popupToken or isOpen then return end
+			if menu.Parent then menu.Visible = false end
+			if menuShadow and menuShadow.Parent then menuShadow.Visible = false end
+		end)
 	end
 
 	local function open()
 		closePopup()
 		isOpen = true
+		popupToken += 1
 		openPopup = close
+		setThemeKey(dropdownEdge, "Color", "Accent")
+		tween(dropdownEdge, EASE_FAST, { Color = Theme.Accent, Transparency = 0.35 })
 		menu.Visible = true
+		if menuShadow then menuShadow.Visible = true end
 		menu.Size = UDim2.fromOffset(button.AbsoluteSize.X, 0)
 		place()
 		tween(arrow, EASE_FAST, { Rotation = 180 })
@@ -2361,6 +3153,7 @@ function Tab:Dropdown(opts)
 				Text = "",
 				LayoutOrder = i,
 				ZIndex = 612,
+				Theme = { BackgroundColor3 = "CardHover" },
 			}, { corner(6) })
 
 			local check = new("Frame", {
@@ -2418,11 +3211,13 @@ function Tab:Dropdown(opts)
 		for _, r in ipairs(rows) do
 			local on = isSelected(r.value)
 			tween(r.check, EASE_FAST, { BackgroundTransparency = on and 0 or 1 })
+			setThemeKey(r.text, "TextColor3", on and "Text" or "SubText")
 			tween(r.text, EASE_FAST, { TextColor3 = on and Theme.Text or Theme.SubText })
 		end
 	end
 
 	function obj:Set(value, silent)
+		if not card.Parent then return false end
 		if multi then
 			selected = {}
 			if type(value) == "table" then
@@ -2435,17 +3230,19 @@ function Tab:Dropdown(opts)
 		end
 		refreshDisplay()
 		paintRows()
-		if opts.Flag then
-			Library.Flags[opts.Flag] = multi and table.clone(selected) or selected
+		if flag then
+			Library.Flags[flag] = multi and table.clone(selected) or selected
 		end
 		if not silent then safeCall(opts.Callback, multi and table.clone(selected) or selected) end
+		return true
 	end
 
 	function obj:Get() return multi and table.clone(selected) or selected end
 
 	-- Главная боль всех библиотек: обновить список на лету.
 	function obj:Refresh(newOptions, keepSelection)
-		options = newOptions or {}
+		if not card.Parent then return false end
+		options = type(newOptions) == "table" and newOptions or {}
 		buildRows()
 		if keepSelection == false then
 			obj:Set(multi and {} or nil, true)
@@ -2470,10 +3267,21 @@ function Tab:Dropdown(opts)
 		if isOpen then
 			tween(menu, EASE_FAST, { Size = UDim2.fromOffset(button.AbsoluteSize.X, rowHeight()) })
 		end
+		return true
 	end
 
-	function obj:Destroy() close() menu:Destroy() card:Destroy() end
+	function obj:Destroy()
+		cleanup()
+		if card.Parent then card:Destroy() end
+	end
 	obj.Card = card
+	cleanup = bindCleanup(card, function()
+		close()
+		popupToken += 1
+		unregisterOption(flag, obj)
+		if menu.Parent then menu:Destroy() end
+		if menuShadow and menuShadow.Parent then menuShadow:Destroy() end
+	end)
 
 	if search then
 		search:GetPropertyChangedSignal("Text"):Connect(function()
@@ -2488,32 +3296,48 @@ function Tab:Dropdown(opts)
 	button.MouseButton1Click:Connect(function()
 		if isOpen then close() else open() end
 	end)
+	button.MouseEnter:Connect(function()
+		setThemeKey(dropdownEdge, "Color", "Accent")
+		tween(dropdownEdge, EASE_FAST, { Color = Theme.Accent, Transparency = 0.45 })
+	end)
+	button.MouseLeave:Connect(function()
+		if isOpen then return end
+		setThemeKey(dropdownEdge, "Color", "StrokeSoft")
+		tween(dropdownEdge, EASE_FAST, { Color = Theme.StrokeSoft, Transparency = 0 })
+	end)
 	-- клик по самому меню не должен его закрывать
 	menu.InputBegan:Connect(function(input)
 		if isPressStart(input) then guardPopup() end
 	end)
 
 	buildRows()
-	obj:Set(opts.Default or (multi and {} or nil), true)
-	if opts.Flag then Library.Options[opts.Flag] = obj end
-	index(self, opts.Text or "Список", "список", card)
+	local default = opts.Default
+	if default == nil and multi then default = {} end
+	obj:Set(default, true)
+	registerOption(flag, obj, multi and table.clone(selected) or selected)
+	index(self, asText(opts.Text, "Список"), "список", card)
 	return obj
 end
 
 --──────────────────────────── Поле ввода ────────────────────────────
 function Tab:Input(opts)
-	opts = opts or {}
-	local card, slot = makeCard(self, opts)
-	slot.Size = UDim2.fromOffset(170, 30)
+	if not tabAlive(self) then return nil end
+	opts = type(opts) == "table" and opts or {}
+	local flag = optionFlag(opts)
+	local controlWidth = math.max(100, finiteNumber(opts.SlotWidth, 170))
+	local card, slot = makeCard(self, opts, controlWidth)
+	slot.Size = UDim2.fromOffset(controlWidth, 30)
 
 	local box = new("Frame", {
 		Parent = slot,
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, 0, 0.5, 0),
-		Size = UDim2.fromOffset(170, 30),
+		Size = UDim2.fromOffset(controlWidth, 30),
 		BorderSizePixel = 0,
 		Theme = { BackgroundColor3 = "Inset" },
 	}, { corner(8), stroke("StrokeSoft", 1, 0) })
+	innerShadow(box, 1, 0.4)
+	topSheen(box, 2, 7, 0.92)
 
 	local input = new("TextBox", {
 		Parent = box,
@@ -2522,8 +3346,8 @@ function Tab:Input(opts)
 		BackgroundTransparency = 1,
 		Font = FONT,
 		TextSize = 12,
-		Text = opts.Default or "",
-		PlaceholderText = opts.Placeholder or "Введите…",
+		Text = asText(opts.Default, ""),
+		PlaceholderText = asText(opts.Placeholder, "Введите..."),
 		ClearTextOnFocus = false,
 		TextXAlignment = Enum.TextXAlignment.Left,
 		Theme = { TextColor3 = "Text", PlaceholderColor3 = "Muted" },
@@ -2531,89 +3355,124 @@ function Tab:Input(opts)
 
 	local border = box:FindFirstChildOfClass("UIStroke")
 	input.Focused:Connect(function()
+		setThemeKey(border, "Color", "Accent")
 		tween(border, EASE_FAST, { Color = Theme.Accent, Transparency = 0 })
 	end)
 	input.FocusLost:Connect(function(enter)
+		setThemeKey(border, "Color", "StrokeSoft")
 		tween(border, EASE_FAST, { Color = Theme.StrokeSoft, Transparency = 0 })
 		if opts.Numeric then
-			local n = tonumber(input.Text)
+			local n = finiteNumber(input.Text, nil)
 			input.Text = n and tostring(n) or ""
 		end
-		if opts.Flag then Library.Flags[opts.Flag] = input.Text end
+		if flag then Library.Flags[flag] = input.Text end
 		if enter or not opts.OnEnter then safeCall(opts.Callback, input.Text, enter) end
 	end)
 
 	local obj = {}
+	local cleanup
 	function obj:Set(v, silent)
-		input.Text = tostring(v or "")
-		if opts.Flag then Library.Flags[opts.Flag] = input.Text end
+		if not card.Parent then return false end
+		input.Text = asText(v, "")
+		if flag then Library.Flags[flag] = input.Text end
 		if not silent then safeCall(opts.Callback, input.Text, false) end
+		return true
 	end
 	function obj:Get() return input.Text end
-	function obj:Destroy() card:Destroy() end
-	obj.Card = card
-
-	if opts.Flag then
-		Library.Flags[opts.Flag] = input.Text
-		Library.Options[opts.Flag] = obj
+	function obj:Destroy()
+		cleanup()
+		if card.Parent then card:Destroy() end
 	end
-	index(self, opts.Text or "Поле", "поле ввода", card)
+	obj.Card = card
+	cleanup = bindCleanup(card, function()
+		unregisterOption(flag, obj)
+	end)
+
+	registerOption(flag, obj, input.Text)
+	index(self, asText(opts.Text, "Поле"), "поле ввода", card)
 	return obj
 end
 
 --────────────────────────────── Кейбинд ──────────────────────────────
 function Tab:Keybind(opts)
-	opts = opts or {}
-	local card, slot = makeCard(self, opts)
-	slot.Size = UDim2.fromOffset(110, 30)
+	if not tabAlive(self) then return nil end
+	opts = type(opts) == "table" and opts or {}
+	local flag = optionFlag(opts)
+	local controlWidth = math.max(88, finiteNumber(opts.SlotWidth, 110))
+	local card, slot = makeCard(self, opts, controlWidth)
+	slot.Size = UDim2.fromOffset(controlWidth, 30)
 
 	local btn = new("TextButton", {
 		Parent = slot,
 		AnchorPoint = Vector2.new(1, 0.5),
 		Position = UDim2.new(1, 0, 0.5, 0),
-		Size = UDim2.fromOffset(110, 30),
+		Size = UDim2.fromOffset(controlWidth, 30),
 		AutoButtonColor = false,
 		BorderSizePixel = 0,
 		Font = FONT_M,
 		TextSize = 12,
-		Text = "—",
+		Text = "Нет",
 		Theme = { BackgroundColor3 = "Inset", TextColor3 = "SubText" },
 	}, { corner(8), stroke("StrokeSoft", 1, 0) })
+	innerShadow(btn, 1, 0.4)
+	topSheen(btn, 2, 7, 0.92)
+	local keyEdge = btn:FindFirstChildOfClass("UIStroke")
 
 	local entry = { key = nil, fire = function() end }
 	table.insert(keybinds, entry)
 
 	local obj = {}
+	local captureFn
+	local cleanup
 
 	function obj:Set(key, silent)
+		if not card.Parent then return false end
+		if typeof(key) == "EnumItem" then
+			local enumType = tostring(key.EnumType)
+			if enumType ~= "Enum.KeyCode" and enumType ~= "Enum.UserInputType" then key = nil end
+		else
+			key = nil
+		end
 		entry.key = key
-		btn.Text = key and (typeof(key) == "EnumItem" and key.Name or tostring(key)) or "—"
+		btn.Text = key and key.Name or "Нет"
+		setThemeKey(btn, "TextColor3", key and "Text" or "SubText")
 		btn.TextColor3 = key and Theme.Text or Theme.SubText
-		if opts.Flag then Library.Flags[opts.Flag] = key end
+		setThemeKey(keyEdge, "Color", "StrokeSoft")
+		tween(keyEdge, EASE_FAST, { Color = Theme.StrokeSoft, Transparency = 0 })
+		if flag then Library.Flags[flag] = key end
 		if not silent then safeCall(opts.Callback, key) end
+		return true
 	end
 
 	function obj:Get() return entry.key end
 	function obj:Destroy()
+		cleanup()
+		if card.Parent then card:Destroy() end
+	end
+	obj.Card = card
+	cleanup = bindCleanup(card, function()
+		if captureTarget == captureFn then captureTarget = nil end
 		for i, e in ipairs(keybinds) do
 			if e == entry then table.remove(keybinds, i) break end
 		end
-		card:Destroy()
-	end
-	obj.Card = card
+		unregisterOption(flag, obj)
+	end)
 
 	entry.fire = function()
 		if opts.OnPress then safeCall(opts.OnPress, entry.key) end
-		if opts.Mode == "toggle" and opts.Flag then
-			local target = Library.Options[opts.Toggle or ""]
+		if opts.Mode == "toggle" and opts.Toggle ~= nil then
+			local target = Library.Options[tostring(opts.Toggle)]
 			if target and target.Set then target:Set(not target:Get()) end
 		end
 	end
 
 	btn.MouseButton1Click:Connect(function()
-		btn.Text = "…"
+		btn.Text = "..."
+		setThemeKey(btn, "TextColor3", "Accent")
 		btn.TextColor3 = Theme.Accent
-		captureTarget = function(input)
+		setThemeKey(keyEdge, "Color", "Accent")
+		tween(keyEdge, EASE_FAST, { Color = Theme.Accent, Transparency = 0.28 })
+		captureFn = function(input)
 			if input.KeyCode == Enum.KeyCode.Escape then
 				obj:Set(nil)
 			elseif input.UserInputType == Enum.UserInputType.Keyboard then
@@ -2625,21 +3484,24 @@ function Tab:Keybind(opts)
 				obj:Set(entry.key)
 			end
 		end
+		captureTarget = captureFn
 	end)
 
 	obj:Set(opts.Default, true)
-	if opts.Flag then Library.Options[opts.Flag] = obj end
-	index(self, opts.Text or "Клавиша", "клавиша", card)
+	registerOption(flag, obj, entry.key)
+	index(self, asText(opts.Text, "Клавиша"), "клавиша", card)
 	return obj
 end
 
 --──────────────────────────── Выбор цвета ────────────────────────────
 function Tab:Colorpicker(opts)
-	opts = opts or {}
-	local card, slot = makeCard(self, opts)
+	if not tabAlive(self) then return nil end
+	opts = type(opts) == "table" and opts or {}
+	local flag = optionFlag(opts)
+	local card, slot = makeCard(self, opts, 60)
 	slot.Size = UDim2.fromOffset(48, 26)
 
-	local color = opts.Default or Color3.fromRGB(122, 140, 255)
+	local color = typeof(opts.Default) == "Color3" and opts.Default or Color3.fromRGB(122, 140, 255)
 	local h, s, v = color:ToHSV()
 
 	local swatchBtn = new("TextButton", {
@@ -2652,6 +3514,24 @@ function Tab:Colorpicker(opts)
 		BorderSizePixel = 0,
 		Text = "",
 	}, { corner(7), stroke("Stroke", 1, 0.25) })
+	new("Frame", {
+		Parent = swatchBtn,
+		Size = UDim2.fromScale(1, 1),
+		BackgroundColor3 = Color3.new(1, 1, 1),
+		BackgroundTransparency = 0.72,
+		ZIndex = 2,
+	}, {
+		corner(7),
+		new("UIGradient", {
+			Rotation = 90,
+			Transparency = NumberSequence.new({
+				NumberSequenceKeypoint.new(0, 0.45),
+				NumberSequenceKeypoint.new(0.5, 0.9),
+				NumberSequenceKeypoint.new(1, 1),
+			}),
+		}),
+	})
+	local swatchEdge = swatchBtn:FindFirstChildOfClass("UIStroke")
 
 	--── поп-ап ──
 	local pop = new("Frame", {
@@ -2663,6 +3543,9 @@ function Tab:Colorpicker(opts)
 		ZIndex = 620,
 		Theme = { BackgroundColor3 = "Card" },
 	}, { corner(11), stroke("Stroke", 1, 0.2) })
+	surfaceNoise(pop, 620, 0.94)
+	topSheen(pop, 626, 10, 0.86)
+	local popShadow = floatingShadow(Overlay, 619, 0.32)
 
 	local sv = new("Frame", {
 		Parent = pop,
@@ -2758,10 +3641,18 @@ function Tab:Colorpicker(opts)
 		ZIndex = 621,
 		Theme = { BackgroundColor3 = "Inset", TextColor3 = "Text" },
 	}, { corner(7), padding(0, 0, 10, 10) })
+	innerShadow(hexBox, 621, 0.42)
 
 	local obj = {}
+	local isOpen = false
+	local popupToken = 0
+	local svDrag
+	local hueDrag
+	local cleanup
 
 	function obj:Set(c, silent)
+		if not card.Parent then return false end
+		if typeof(c) ~= "Color3" then c = color end
 		color = c
 		h, s, v = color:ToHSV()
 		swatchBtn.BackgroundColor3 = color
@@ -2772,37 +3663,68 @@ function Tab:Colorpicker(opts)
 			math.floor(color.R * 255 + 0.5),
 			math.floor(color.G * 255 + 0.5),
 			math.floor(color.B * 255 + 0.5))
-		if opts.Flag then Library.Flags[opts.Flag] = color end
+		if flag then Library.Flags[flag] = color end
 		if not silent then safeCall(opts.Callback, color) end
+		return true
 	end
 
 	function obj:Get() return color end
 
 	local stopFollow
 	local function close()
+		if not isOpen then return end
+		isOpen = false
+		popupToken += 1
+		local token = popupToken
 		if openPopup == close then openPopup = nil end
 		if stopFollow then stopFollow() stopFollow = nil end
+		setThemeKey(swatchEdge, "Color", "Stroke")
+		tween(swatchEdge, EASE_FAST, { Color = Theme.Stroke, Transparency = 0.25 })
 		tween(pop, EASE_FAST, { Size = UDim2.fromOffset(228, 0) })
-		task.delay(0.13, function() pop.Visible = false end)
+		task.delay(0.13, function()
+			if token ~= popupToken or isOpen then return end
+			if pop.Parent then pop.Visible = false end
+			if popShadow and popShadow.Parent then popShadow.Visible = false end
+		end)
 	end
 
 	local function place()
 		local vp = viewport()
-		local x = math.min(swatchBtn.AbsolutePosition.X + swatchBtn.AbsoluteSize.X - 228, vp.X - 238)
+		local x = swatchBtn.AbsolutePosition.X + swatchBtn.AbsoluteSize.X - 228
 		local y = swatchBtn.AbsolutePosition.Y + swatchBtn.AbsoluteSize.Y + 6
 		if y + 182 > vp.Y - 10 then y = swatchBtn.AbsolutePosition.Y - 188 end
-		pop.Position = UDim2.fromOffset(math.max(10, x), y)
+		x = math.clamp(x, 10, math.max(10, vp.X - 238))
+		y = math.clamp(y, 10, math.max(10, vp.Y - 192))
+		pop.Position = UDim2.fromOffset(x, y)
+		if popShadow then
+			popShadow.Position = UDim2.fromOffset(x - 18, y - 18)
+			popShadow.Size = UDim2.fromOffset(264, 218)
+		end
 	end
 
 	swatchBtn.MouseButton1Click:Connect(function()
-		if pop.Visible then close() return end
+		if isOpen then close() return end
 		closePopup()
+		isOpen = true
+		popupToken += 1
 		openPopup = close
+		setThemeKey(swatchEdge, "Color", "Accent")
+		tween(swatchEdge, EASE_FAST, { Color = Theme.Accent, Transparency = 0.1 })
 		pop.Visible = true
+		if popShadow then popShadow.Visible = true end
 		pop.Size = UDim2.fromOffset(228, 0)
 		place()
 		tween(pop, EASE, { Size = UDim2.fromOffset(228, 182) })
 		stopFollow = onRender(place)
+	end)
+	swatchBtn.MouseEnter:Connect(function()
+		setThemeKey(swatchEdge, "Color", "Accent")
+		tween(swatchEdge, EASE_FAST, { Color = Theme.Accent, Transparency = 0.1 })
+	end)
+	swatchBtn.MouseLeave:Connect(function()
+		if isOpen then return end
+		setThemeKey(swatchEdge, "Color", "Stroke")
+		tween(swatchEdge, EASE_FAST, { Color = Theme.Stroke, Transparency = 0.25 })
 	end)
 
 	pop.InputBegan:Connect(function(input)
@@ -2811,29 +3733,29 @@ function Tab:Colorpicker(opts)
 
 	sv.InputBegan:Connect(function(input)
 		if not isPressStart(input) then return end
-		local function upd(i)
-			local ns = clamp01((i.Position.X - sv.AbsolutePosition.X) / sv.AbsoluteSize.X)
-			local nv = 1 - clamp01((i.Position.Y - sv.AbsolutePosition.Y) / sv.AbsoluteSize.Y)
+		svDrag = function(i)
+			local ns = clamp01((i.Position.X - sv.AbsolutePosition.X) / math.max(1, sv.AbsoluteSize.X))
+			local nv = 1 - clamp01((i.Position.Y - sv.AbsolutePosition.Y) / math.max(1, sv.AbsoluteSize.Y))
 			obj:Set(Color3.fromHSV(h, ns, nv))
 		end
-		upd(input)
-		activeDrag = upd
+		svDrag(input)
+		activeDrag = svDrag
 	end)
 
 	hue.InputBegan:Connect(function(input)
 		if not isPressStart(input) then return end
-		local function upd(i)
-			local nh = clamp01((i.Position.Y - hue.AbsolutePosition.Y) / hue.AbsoluteSize.Y)
+		hueDrag = function(i)
+			local nh = clamp01((i.Position.Y - hue.AbsolutePosition.Y) / math.max(1, hue.AbsoluteSize.Y))
 			obj:Set(Color3.fromHSV(nh, s, v))
 		end
-		upd(input)
-		activeDrag = upd
+		hueDrag(input)
+		activeDrag = hueDrag
 	end)
 
 	hexBox.FocusLost:Connect(function()
-		local hex = hexBox.Text:gsub("#", "")
+		local hex = hexBox.Text:gsub("#", ""):gsub("%s+", "")
 		if #hex == 6 and tonumber(hex, 16) then
-			obj:Set(Color3.fromHex and Color3.fromHex(hex) or Color3.fromRGB(
+			obj:Set(Color3.fromRGB(
 				tonumber(hex:sub(1, 2), 16),
 				tonumber(hex:sub(3, 4), 16),
 				tonumber(hex:sub(5, 6), 16)))
@@ -2842,12 +3764,23 @@ function Tab:Colorpicker(opts)
 		end
 	end)
 
-	function obj:Destroy() close() pop:Destroy() card:Destroy() end
+	function obj:Destroy()
+		cleanup()
+		if card.Parent then card:Destroy() end
+	end
 	obj.Card = card
+	cleanup = bindCleanup(card, function()
+		close()
+		popupToken += 1
+		if activeDrag == svDrag or activeDrag == hueDrag then activeDrag = nil end
+		unregisterOption(flag, obj)
+		if pop.Parent then pop:Destroy() end
+		if popShadow and popShadow.Parent then popShadow:Destroy() end
+	end)
 
 	obj:Set(color, true)
-	if opts.Flag then Library.Options[opts.Flag] = obj end
-	index(self, opts.Text or "Цвет", "цвет", card)
+	registerOption(flag, obj, color)
+	index(self, asText(opts.Text, "Цвет"), "цвет", card)
 	return obj
 end
 
@@ -2886,8 +3819,23 @@ local function decodeValue(v)
 	return v
 end
 
+local function safeFilePart(value, fallback)
+	local text = asText(value, fallback or "default")
+	text = text:gsub("[%z\1-\31<>:\"/\\|%?%*]", "_")
+	repeat
+		local cleaned, count = text:gsub("%.%.", "_")
+		text = cleaned
+	until count == 0
+	text = text:gsub("^%s+", ""):gsub("%s+$", "")
+	text = text:gsub("^[%. ]+", ""):gsub("[%. ]+$", "")
+	if text == "" then text = fallback or "default" end
+	local valid, cut = pcall(utf8.offset, text, 65)
+	if valid and cut then text = text:sub(1, cut - 1) end
+	return text
+end
+
 function Window:ConfigFolder()
-	return "AuroraUI/" .. tostring(self.ConfigName or game.PlaceId)
+	return "AuroraUI/" .. safeFilePart(self.ConfigName or game.PlaceId, tostring(game.PlaceId))
 end
 
 local function ensureFolder(path)
@@ -2896,27 +3844,31 @@ local function ensureFolder(path)
 	for part in path:gmatch("[^/]+") do
 		table.insert(parts, part)
 		local sub = table.concat(parts, "/")
-		if not FS.isdir(sub) then pcall(FS.mkdir, sub) end
+		local checked, exists = pcall(FS.isdir, sub)
+		if not checked or not exists then pcall(FS.mkdir, sub) end
 	end
 end
 
 function Window:SaveConfig(name)
+	if not Library.Alive then return false end
 	if not HAS_FS then
 		Library:Notify{ Title = "Конфиги недоступны", Content = "Исполнитель не даёт доступ к файлам.", Type = "warn" }
 		return false
 	end
-	name = name or "default"
+	name = safeFilePart(name, "default")
 	local folder = self:ConfigFolder()
 	ensureFolder(folder)
 
-	local data = {}
-	for flag, value in next, Library.Flags do
-		data[flag] = encodeValue(value)
-	end
-
-	local ok, encoded = pcall(HttpService.JSONEncode, HttpService, data)
+	local ok, encoded = pcall(function()
+		local data = {}
+		for flag, value in next, Library.Flags do
+			data[tostring(flag)] = encodeValue(value)
+		end
+		return HttpService:JSONEncode(data)
+	end)
 	if not ok then return false end
-	local written = pcall(FS.write, folder .. "/" .. name .. ".json", encoded)
+	local wrote, result = pcall(FS.write, folder .. "/" .. name .. ".json", encoded)
+	local written = wrote and result ~= false
 	if written then
 		Library:Notify{ Title = "Сохранено", Content = "Конфиг «" .. name .. "»", Type = "success" }
 	end
@@ -2924,22 +3876,28 @@ function Window:SaveConfig(name)
 end
 
 function Window:LoadConfig(name)
+	if not Library.Alive then return false end
 	if not HAS_FS then return false end
-	name = name or "default"
+	name = safeFilePart(name, "default")
 	local path = self:ConfigFolder() .. "/" .. name .. ".json"
-	if not FS.isfile(path) then return false end
+	local checked, exists = pcall(FS.isfile, path)
+	if not checked or not exists then return false end
 
 	local ok, raw = pcall(FS.read, path)
 	if not ok then return false end
 	local parsed, data = pcall(HttpService.JSONDecode, HttpService, raw)
-	if not parsed then return false end
+	if not parsed or type(data) ~= "table" then return false end
 
 	for flag, value in next, data do
-		local element = Library.Options[flag]
-		if element and element.Set then
-			pcall(element.Set, element, decodeValue(value))
-		else
-			Library.Flags[flag] = decodeValue(value)
+		local decoded, result = pcall(decodeValue, value)
+		if decoded then
+			local key = tostring(flag)
+			local element = Library.Options[key]
+			if element and element.Set then
+				pcall(element.Set, element, result)
+			else
+				Library.Flags[key] = result
+			end
 		end
 	end
 	Library:Notify{ Title = "Загружено", Content = "Конфиг «" .. name .. "»", Type = "success" }
@@ -2948,31 +3906,48 @@ end
 
 function Window:ListConfigs()
 	local out = {}
+	local seen = {}
+	if not Library.Alive then return out end
 	if not HAS_FS or not FS.list then return out end
 	local folder = self:ConfigFolder()
-	if FS.isdir and not FS.isdir(folder) then return out end
+	if FS.isdir then
+		local checked, exists = pcall(FS.isdir, folder)
+		if not checked or not exists then return out end
+	end
 	local ok, files = pcall(FS.list, folder)
-	if not ok then return out end
+	if not ok or type(files) ~= "table" then return out end
 	for _, path in ipairs(files) do
 		local name = tostring(path):match("([^/\\]+)%.json$")
-		if name then table.insert(out, name) end
+		if name and not seen[name] then
+			seen[name] = true
+			table.insert(out, name)
+		end
 	end
+	table.sort(out)
 	return out
 end
 
 function Window:DeleteConfig(name)
+	if not Library.Alive then return false end
 	if not HAS_FS or not FS.delete then return false end
-	return pcall(FS.delete, self:ConfigFolder() .. "/" .. name .. ".json")
+	name = safeFilePart(name, "default")
+	local path = self:ConfigFolder() .. "/" .. name .. ".json"
+	local checked, exists = pcall(FS.isfile, path)
+	if not checked or not exists then return false end
+	local ok, result = pcall(FS.delete, path)
+	return ok and result ~= false
 end
 
 -- Готовая вкладка настроек: конфиги, темы, клавиша, выгрузка.
 function Window:SettingsTab(opts)
-	opts = opts or {}
+	if not Library.Alive then return nil end
+	opts = type(opts) == "table" and opts or {}
 	local tab = self:Tab{
 		Name = opts.Name or "Настройки",
 		Icon = opts.Icon or "settings",
 		Desc = "Тема, конфигурации и управление интерфейсом",
 	}
+	if not tab then return nil end
 
 	tab:Section{ Text = "Внешний вид" }
 
@@ -3041,6 +4016,7 @@ end
 --═══════════════════════════════════════════════════════════════════════
 
 function Library:SetTheme(name)
+	if not self.Alive then return false end
 	local preset = THEMES[name]
 	if not preset then return false end
 	self.ThemeName = name
@@ -3048,19 +4024,24 @@ function Library:SetTheme(name)
 
 	for i = #ThemeRegistry, 1, -1 do
 		local entry = ThemeRegistry[i]
-		if not entry.inst or not entry.inst.Parent then
+		local color = Theme[entry.key]
+		if not entry.inst or not entry.inst.Parent or not color then
 			table.remove(ThemeRegistry, i)
 		else
-			tween(entry.inst, EASE, { [entry.prop] = Theme[entry.key] })
+			tween(entry.inst, EASE, { [entry.prop] = color })
 		end
 	end
 
 	for i = #GradientRegistry, 1, -1 do
 		local entry = GradientRegistry[i]
-		if not entry.inst or not entry.inst.Parent then
+		local colorA, colorB = Theme[entry.a], Theme[entry.b]
+		if not entry.inst or not entry.inst.Parent or not colorA or not colorB then
 			table.remove(GradientRegistry, i)
 		else
-			entry.inst.Color = ColorSequence.new(Theme[entry.a], Theme[entry.b])
+			local ok = pcall(function()
+				entry.inst.Color = ColorSequence.new(colorA, colorB)
+			end)
+			if not ok then table.remove(GradientRegistry, i) end
 		end
 	end
 
@@ -3074,9 +4055,12 @@ end
 
 function Library:Destroy()
 	if not self.Alive then return end
+	closePopup()
 	self.Alive = false
+	activeDrag = nil
+	captureTarget = nil
+	popupGuard = false
 
-	for _, fn in ipairs(self._unloadFns) do pcall(fn) end
 	for _, conn in ipairs(self._conns) do pcall(function() conn:Disconnect() end) end
 
 	table.clear(self._conns)
@@ -3086,7 +4070,11 @@ function Library:Destroy()
 	table.clear(Dispatch.Ended)
 	table.clear(keybinds)
 	table.clear(ThemeRegistry)
+	table.clear(GradientRegistry)
+	table.clear(ThemeWatch)
 	table.clear(self.SearchIndex)
+	table.clear(self.Options)
+	table.clear(self.Flags)
 
 	if Blur then pcall(function() Blur:Destroy() end) end
 	if Gui then
@@ -3097,6 +4085,7 @@ function Library:Destroy()
 		end)
 		task.delay(0.2, function() pcall(function() Gui:Destroy() end) end)
 	end
+	table.clear(self.Windows)
 
 	if ENV.AuroraUI == self then ENV.AuroraUI = nil end
 end
